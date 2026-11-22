@@ -474,7 +474,7 @@ select option { color: var(--text); background: var(--surface); }
 .contract-action-button.is-negative { color: #fff; border-color: #bd3541; background: #bd3541; }
 .contract-action-button:hover:not(:disabled) { filter: brightness(1.12); transform: translateY(-1px); }
 .contract-action-button:disabled { cursor: not-allowed; }
-.contract-action-name { grid-area: name; font: 800 14px/1.2 'Manrope', sans-serif; overflow-wrap: anywhere; }
+.contract-action-name { grid-area: name; font: 800 42px/1.2 'Manrope', sans-serif; overflow-wrap: anywhere; }
 .contract-action-payout { grid-area: payout; font: 700 13px/1.25 'Manrope', sans-serif; font-variant-numeric: tabular-nums; }
 .contract-action-button small { grid-area: detail; color: rgba(255, 255, 255, .82); font-size: 8px; line-height: 1.4; overflow-wrap: anywhere; }
 .open-trade-note { display: flex; align-items: center; gap: 7px; padding-top: 10px; margin-top: 10px; color: var(--text-secondary); border-top: 1px solid var(--border); font-size: 9px; }
@@ -560,7 +560,7 @@ select option { color: var(--text); background: var(--surface); }
     backdrop-filter: blur(14px);
   }
   .contract-action-button { min-height: 82px; padding: 8px; }
-  .contract-action-name { font-size: 12px; }
+  .contract-action-name { font-size: 36px; }
   .contract-action-payout { font-size: 12px; }
   .contract-action-button small { font-size: 7px; }
   .history-panel { padding: 15px 12px; }
@@ -931,6 +931,8 @@ select option { color: var(--text); background: var(--surface); }
   .wallet-switcher { width: clamp(72px, 27vw, 100px); }
   .wallet-switcher-trigger strong { max-width: 48px; overflow: hidden; text-overflow: ellipsis; }
   .header-actions { gap: 3px; }
+  .interval-picker button { min-width: 28px; padding-right: 4px; padding-left: 4px; }
+  .chart-style-toggle { padding-right: 6px; padding-left: 6px; font-size: 8px; }
 }
 
 .cashier-page { max-width: 1120px; }

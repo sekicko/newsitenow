@@ -63,12 +63,11 @@ export function PriceChart({ symbol, interval, ticks, candles, chartStyle, loadi
       },
       timeScale: {
         borderColor: dark ? '#293344' : '#e5e9ef',
-        timeVisible: false,
+        timeVisible: true,
         secondsVisible: false,
         rightOffset: 4,
         rightOffsetPixels: 112,
         barSpacing: 8,
-        tickMarkFormatter: () => '',
       },
       crosshair: {
         mode: CrosshairMode.Normal,
