@@ -306,6 +306,8 @@ function AuthModal({
           password,
         });
         if (error) throw error;
+        window.location.assign('/');
+        return;
       } else {
         const parsed = parsePhoneNumberFromString(identifier.trim());
         if (!parsed?.isValid()) {
