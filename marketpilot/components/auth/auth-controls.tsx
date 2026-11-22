@@ -146,18 +146,6 @@ export function AuthControls({
     walletSwitcherRef.current?.querySelector<HTMLButtonElement>('.wallet-switcher-trigger')?.focus();
   };
 
-  const signOut = async () => {
-    try {
-      const supabase = authClient ?? getSupabaseBrowserClient();
-      const { error } = await supabase.auth.signOut();
-      if (error) throw error;
-      setHeaderError('');
-      onUserChange(null);
-    } catch (error) {
-      setHeaderError(errorText(error));
-    }
-  };
-
   return (
     <>
       {user ? (
@@ -199,7 +187,6 @@ export function AuthControls({
               </div>
             )}
           </div>
-          <button type="button" className="account-button login-button" onClick={signOut}>Sign out</button>
         </div>
       ) : (
         <div className="account-actions">

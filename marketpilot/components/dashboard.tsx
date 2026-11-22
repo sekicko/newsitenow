@@ -6,11 +6,15 @@ import {
   BarChart3,
   ChevronDown,
   Clock3,
+  History,
+  LogOut,
   Menu,
   Moon,
+  RotateCcw,
   Sun,
   Wifi,
   WifiOff,
+  Wallet,
   X,
 } from 'lucide-react';
 import { AuthControls } from '@/components/auth/auth-controls';
@@ -37,6 +41,13 @@ const kindLabels: Record<PracticeKind, string> = {
   'matches-differs': 'Matches / Differs',
   'rise-fall': 'Rise / Fall',
 };
+
+type DashboardPage = 'hub' | 'cashier' | 'history';
+const sidebarItems = [
+  { page: 'hub', label: 'Traders Hub', icon: Activity },
+  { page: 'cashier', label: 'Cashier', icon: Wallet },
+  { page: 'history', label: 'Trade History', icon: History },
+] as const satisfies readonly { page: DashboardPage; label: string; icon: typeof Activity }[];
 
 const contractDefaults: Record<PracticeKind, string> = {
   'over-under': 'DIGITOVER',
@@ -255,13 +266,18 @@ export function MarketPilotDashboard() {
   const [walletError, setWalletError] = useState('');
   const [historyError, setHistoryError] = useState('');
   const [tradeActionError, setTradeActionError] = useState('');
+  const [cashierError, setCashierError] = useState('');
+  const [cashierMessage, setCashierMessage] = useState('');
+  const [cashierResetting, setCashierResetting] = useState(false);
+  const [sidebarError, setSidebarError] = useState('');
+  const [signingOut, setSigningOut] = useState(false);
   const [openingTrade, setOpeningTrade] = useState(false);
   const [trades, setTrades] = useState<PracticeTrade[]>([]);
   const [digitExitHighlight, setDigitExitHighlight] = useState<DigitExitHighlight | null>(null);
   const [activeTradeView, setActiveTradeView] = useState<TradeHistoryView>('all');
   const [marketMenuOpen, setMarketMenuOpen] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
-  const [mobilePage, setMobilePage] = useState<'hub' | 'history'>('hub');
+  const [currentPage, setCurrentPage] = useState<DashboardPage>('hub');
   const tradeCounter = useRef(0);
   const openingTradeRef = useRef(false);
   const settlingTradeIdsRef = useRef(new Set<string>());
@@ -296,7 +312,8 @@ export function MarketPilotDashboard() {
   const currentTick = latestLiveTick ?? latestHistoricalTick;
   const precision = precisionFromPip(currentTick?.pipSize ?? selectedMarket?.pipSize ?? 0.01);
   const formattedPrice = currentTick ? currentTick.quote.toFixed(precision) : null;
-  const pricePrefix = formattedPrice && precision > 0 ? formattedPrice.slice(0, -1) : formattedPrice ?? '—';
+  const pricePrefix = formattedPrice?.slice(0, -1) ?? '';
+  const priceLastDigit = formattedPrice?.at(-1);
   const contractTypes = CONTRACT_TYPES[kind];
   const tickContracts = useMemo(
     () => market.contracts.filter(supportsTickDuration),
@@ -679,6 +696,53 @@ export function MarketPilotDashboard() {
     setContractType(contractDefaults[nextKind]);
   };
 
+  const resetDemoWallet = async () => {
+    if (!authUser || !walletBalances || walletLoading || walletError || cashierResetting) return;
+
+    const userId = authUser.id;
+    setCashierResetting(true);
+    setCashierError('');
+    setCashierMessage('');
+    try {
+      const { data, error } = await getSupabaseBrowserClient().rpc('marketpilot_reset_demo_wallet');
+      if (error) throw error;
+      const balance = storedNumber(data);
+      if (balance !== 10000) throw new Error('The wallet returned an unexpected reset balance.');
+      if (authUserIdRef.current !== userId) return;
+      setWalletBalances((current) => current ? { ...current, demo: balance } : current);
+      setCashierMessage('Demo balance reset to $10,000.00.');
+    } catch (error) {
+      if (authUserIdRef.current === userId) {
+        setCashierError(error instanceof Error ? error.message : 'The demo balance could not be reset.');
+      }
+    } finally {
+      setCashierResetting(false);
+    }
+  };
+
+  const signOut = async () => {
+    if (!authUser || signingOut) return;
+
+    const userId = authUser.id;
+    setSigningOut(true);
+    setSidebarError('');
+    try {
+      const { error } = await getSupabaseBrowserClient().auth.signOut();
+      if (error) throw error;
+      if (authUserIdRef.current === userId) {
+        setAuthUser(null);
+        setCurrentPage('hub');
+        setMobileMenuOpen(false);
+      }
+    } catch (error) {
+      if (authUserIdRef.current === userId) {
+        setSidebarError(error instanceof Error ? error.message : 'Sign out could not be completed.');
+      }
+    } finally {
+      setSigningOut(false);
+    }
+  };
+
   const startPractice = async (type = selectedContractType, tradeQuote = quote) => {
     const tradeContract = tickContracts.find((contract) => contract.contract_type === type);
     if (
@@ -799,18 +863,6 @@ export function MarketPilotDashboard() {
     return () => document.removeEventListener('keydown', handleKeyDown);
   }, [mobileMenuOpen]);
 
-  useEffect(() => {
-    const desktop = window.matchMedia('(min-width: 601px)');
-    const resetMobilePage = (event: MediaQueryListEvent) => {
-      if (event.matches) {
-        setMobilePage('hub');
-        setMobileMenuOpen(false);
-      }
-    };
-    desktop.addEventListener('change', resetMobilePage);
-    return () => desktop.removeEventListener('change', resetMobilePage);
-  }, []);
-
   const handleMarketOptionKeyDown = (event: ReactKeyboardEvent<HTMLButtonElement>) => {
     const options = Array.from(marketOptionsRef.current?.querySelectorAll<HTMLButtonElement>('.market-option') ?? []);
     const currentIndex = options.indexOf(event.currentTarget);
@@ -840,6 +892,7 @@ export function MarketPilotDashboard() {
   const totalProfit = walletTrades.reduce((total, trade) => total + (trade.profit ?? 0), 0);
   const themeIcon = theme === 'dark' ? <Sun size={16} /> : <Moon size={16} />;
   const formatMoney = (amount: number) => `$${Math.abs(amount).toFixed(2)}`;
+  const formatBalance = (amount: number) => `$${amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   const formatProfit = (amount: number) => `${amount >= 0 ? '+' : '-'}${formatMoney(amount)}`;
   const renderContractActions = (placement: 'inline' | 'floating') => (
     <div
@@ -956,26 +1009,41 @@ export function MarketPilotDashboard() {
           </a>
         </div>
         <nav className="main-nav" aria-label="Main navigation">
-          <a className="nav-link active" href="#market">Traders Hub</a>
-          <a className="nav-link" href="#statistics">Markets</a>
-          <a className="nav-link" href="#trade">Trade</a>
+          <button
+            type="button"
+            className={`nav-link${currentPage === 'hub' ? ' active' : ''}`}
+            onClick={() => setCurrentPage('hub')}
+          >
+            Traders Hub
+          </button>
+          <a className="nav-link" href="#statistics" onClick={() => setCurrentPage('hub')}>Markets</a>
+          <a className="nav-link" href="#trade" onClick={() => setCurrentPage('hub')}>Trade</a>
+          <button
+            type="button"
+            className={`nav-link${currentPage === 'cashier' ? ' active' : ''}`}
+            onClick={() => setCurrentPage('cashier')}
+          >
+            Cashier
+          </button>
         </nav>
-        <nav className="mobile-contract-nav" aria-label="Choose contract type">
-          {(Object.keys(kindLabels) as PracticeKind[]).map((item) => (
-            <button
-              key={item}
-              type="button"
-              className={kind === item ? 'selected' : ''}
-              onClick={() => {
-                chooseKind(item);
-                setMobilePage('hub');
-              }}
-              aria-pressed={kind === item}
-            >
-              {kindLabels[item]}
-            </button>
-          ))}
-        </nav>
+        {currentPage === 'hub' && (
+          <nav className="mobile-contract-nav" aria-label="Choose contract type">
+            {(Object.keys(kindLabels) as PracticeKind[]).map((item) => (
+              <button
+                key={item}
+                type="button"
+                className={kind === item ? 'selected' : ''}
+                onClick={() => {
+                  chooseKind(item);
+                  setCurrentPage('hub');
+                }}
+                aria-pressed={kind === item}
+              >
+                {kindLabels[item]}
+              </button>
+            ))}
+          </nav>
+        )}
         <div className="header-actions">
           <AuthControls
             onUserChange={onAuthUserChange}
@@ -985,14 +1053,6 @@ export function MarketPilotDashboard() {
             walletError={walletError}
             onWalletChange={setActiveWallet}
           />
-          <button
-            type="button"
-            className="icon-button theme-toggle"
-            onClick={() => setTheme((value) => value === 'dark' ? 'light' : 'dark')}
-            aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} theme`}
-          >
-            {themeIcon}
-          </button>
           <div className={`connection-pill ${market.connectionState}`}>
             {market.connectionState === 'connected' ? <Wifi size={14} /> : <WifiOff size={14} />}
             <span>{market.connectionState === 'connected' ? 'Market data live' : market.connectionState}</span>
@@ -1021,22 +1081,50 @@ export function MarketPilotDashboard() {
               </button>
             </div>
             <nav className="mobile-sidebar-links" aria-label="Main navigation">
+              {sidebarItems.map(({ page, label, icon: Icon }) => (
+                <button
+                  key={page}
+                  type="button"
+                  className={currentPage === page ? 'selected' : ''}
+                  aria-current={currentPage === page ? 'page' : undefined}
+                  onClick={() => {
+                    setCurrentPage(page);
+                    setMobileMenuOpen(false);
+                  }}
+                >
+                  <Icon size={16} aria-hidden="true" />
+                  <span>{label}</span>
+                </button>
+              ))}
+            </nav>
+            <div className="mobile-sidebar-footer">
               <button
                 type="button"
-                className={mobilePage === 'history' ? 'selected' : ''}
-                onClick={() => {
-                  setMobilePage('history');
-                  setMobileMenuOpen(false);
-                }}
+                className="mobile-sidebar-action"
+                onClick={() => setTheme((value) => value === 'dark' ? 'light' : 'dark')}
+                aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} theme`}
               >
-                Trade History
+                {themeIcon}
+                <span>{theme === 'dark' ? 'Light theme' : 'Dark theme'}</span>
               </button>
-            </nav>
+              {authUser && (
+                <button
+                  type="button"
+                  className="mobile-sidebar-action sign-out-action"
+                  onClick={() => void signOut()}
+                  disabled={signingOut}
+                >
+                  <LogOut size={16} aria-hidden="true" />
+                  <span>{signingOut ? 'Signing out…' : 'Sign out'}</span>
+                </button>
+              )}
+              {sidebarError && <p className="mobile-sidebar-error" role="alert">{sidebarError}</p>}
+            </div>
           </aside>
         </div>
       )}
 
-      {mobilePage === 'history' && (
+      {currentPage === 'history' && (
         <div className="mobile-history-page">
           <TradeHistoryPanel
             id="mobile-trade-history"
@@ -1051,7 +1139,85 @@ export function MarketPilotDashboard() {
         </div>
       )}
 
-      <div className={`page-content${mobilePage === 'history' ? ' is-mobile-history-hidden' : ''}`}>
+      {currentPage === 'cashier' && (
+        <section className="page-content cashier-page" aria-labelledby="cashier-title">
+          <div className="page-heading cashier-heading">
+            <div>
+              <p className="eyebrow">ACCOUNT MANAGEMENT</p>
+              <h1 id="cashier-title">Cashier</h1>
+              <p className="heading-subtitle">Choose an account to see its available USD balance.</p>
+            </div>
+            <span className="cashier-currency">USD · US Dollar</span>
+          </div>
+          {!authUser && (
+            <p className="cashier-message" role="status">Sign in to view your account balances.</p>
+          )}
+          {walletError && <p className="cashier-message cashier-message--error" role="alert">{walletError}</p>}
+          {cashierError && <p className="cashier-message cashier-message--error" role="alert">{cashierError}</p>}
+          {cashierMessage && <p className="cashier-message cashier-message--success" role="status">{cashierMessage}</p>}
+          <div className="cashier-wallet-grid" role="group" aria-label="Select account">
+            {(['demo', 'real'] as const).map((wallet) => {
+              const isDemo = wallet === 'demo';
+              const walletLabel = isDemo ? 'Demo account' : 'Real account';
+              const balanceText = !authUser
+                ? 'Sign in to view'
+                : walletLoading
+                  ? 'Loading balance…'
+                  : walletError
+                    ? 'Unavailable'
+                    : walletBalances
+                      ? formatBalance(walletBalances[wallet])
+                      : 'Unavailable';
+
+              return (
+                <article
+                  key={wallet}
+                  className={`cashier-wallet-card${activeWallet === wallet ? ' is-active' : ''}${isDemo ? ' cashier-wallet-card--demo' : ' cashier-wallet-card--real'}`}
+                >
+                  <button
+                    type="button"
+                    className="cashier-wallet-choice"
+                    onClick={() => setActiveWallet(wallet)}
+                    aria-pressed={activeWallet === wallet}
+                  >
+                    <span className="cashier-wallet-heading">
+                      <span className={`cashier-wallet-badge${isDemo ? ' is-demo' : ' is-real'}`}>
+                        {isDemo ? 'DEMO' : 'REAL'}
+                      </span>
+                      {activeWallet === wallet && <span className="cashier-active-label">ACTIVE</span>}
+                    </span>
+                    <span className="cashier-wallet-title">{walletLabel}</span>
+                    <strong className="cashier-wallet-balance">{balanceText}</strong>
+                    <span className="cashier-wallet-description">
+                      {isDemo ? 'Practice with virtual funds.' : 'Real-money deposits and trading are not enabled.'}
+                    </span>
+                  </button>
+                  {isDemo && (
+                    <button
+                      type="button"
+                      className="cashier-reset-button"
+                      onClick={() => void resetDemoWallet()}
+                      disabled={!authUser || !walletBalances || walletLoading || !!walletError || cashierResetting}
+                    >
+                      <RotateCcw size={15} aria-hidden="true" />
+                      {cashierResetting ? 'Resetting balance…' : 'Reset demo balance'}
+                    </button>
+                  )}
+                </article>
+              );
+            })}
+          </div>
+          <aside className="cashier-info-card">
+            <span className="cashier-info-icon"><Wallet size={19} aria-hidden="true" /></span>
+            <div>
+              <strong>Manage your practice funds</strong>
+              <p>Demo funds are virtual and can be reset to $10,000.00 at any time. Open Demo trades remain active after a reset, and their results can change the balance later. Your real account is read-only; deposits and live trading are not available.</p>
+            </div>
+          </aside>
+        </section>
+      )}
+
+      <div className={`page-content${currentPage !== 'hub' ? ' is-inactive-page' : ''}`}>
         <div className="mobile-page-heading">Traders Hub</div>
         {(market.connectionState !== 'connected' || market.error) && (
           <div className="connection-alert" role="status">
@@ -1144,11 +1310,9 @@ export function MarketPilotDashboard() {
                   <div className="price-readout">
                     <div className="price-main">
                       <span className="price-label">{latestLiveTick ? 'LIVE PRICE' : 'LATEST AVAILABLE PRICE'}</span>
-                      <strong className={latestLiveTick ? '' : 'historical-price'}>{pricePrefix}</strong>
-                    </div>
-                    <div className="price-last-digit">
-                      <span className="price-label">LAST DIGIT</span>
-                      <strong className="last-digit-box">{activeDigit ?? '—'}</strong>
+                      <strong className={latestLiveTick ? '' : 'historical-price'}>
+                        {formattedPrice ? <>{pricePrefix}<span className="price-last-digit-highlight">{priceLastDigit}</span></> : '—'}
+                      </strong>
                     </div>
                   </div>
                   <span className="tick-time">
@@ -1336,7 +1500,7 @@ export function MarketPilotDashboard() {
           </aside>
         </div>
       </div>
-      {mobilePage === 'hub' && renderContractActions('floating')}
+      {currentPage === 'hub' && renderContractActions('floating')}
     </main>
   );
 }
