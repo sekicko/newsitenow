@@ -32,8 +32,8 @@ export async function POST(request: NextRequest) {
     return invalidCredentials();
   }
 
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL?.trim();
-  const publishableKey = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY?.trim();
+  const url = process.env.SUPABASE_URL?.trim();
+  const publishableKey = process.env.SUPABASE_PUBLISHABLE_KEY?.trim();
   const secretKey = process.env.SUPABASE_SECRET_KEY?.trim();
   if (!url || !publishableKey || !secretKey) {
     return NextResponse.json({ error: 'Phone sign-in is not configured on this server.' }, { status: 503 });

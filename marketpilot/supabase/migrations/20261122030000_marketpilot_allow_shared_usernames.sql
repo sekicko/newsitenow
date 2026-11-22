@@ -1,0 +1,1 @@
+drop index if exists public.marketpilot_profiles_display_name_unique;

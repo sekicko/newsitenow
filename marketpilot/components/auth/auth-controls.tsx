@@ -237,9 +237,8 @@ function AuthModal({
   setMode: (mode: AuthMode) => void;
   onClose: () => void;
 }) {
-  const [fullName, setFullName] = useState('');
-  const [displayName, setDisplayName] = useState('');
   const [email, setEmail] = useState('');
+  const [displayName, setDisplayName] = useState('');
   const [identifier, setIdentifier] = useState('');
   const [country, setCountry] = useState<CountryCode | ''>('');
   const [countryOpen, setCountryOpen] = useState(false);
@@ -348,10 +347,8 @@ function AuthModal({
     setBusy(true);
     setMessage(null);
     try {
-      const cleanFullName = fullName.trim();
-      const cleanDisplayName = displayName.trim();
       const cleanEmail = email.trim().toLowerCase();
-      if (cleanFullName.length < 2) throw new Error('Enter your full name.');
+      const cleanDisplayName = displayName.trim();
       if (!/^[A-Za-z0-9_]{3,24}$/.test(cleanDisplayName)) {
         throw new Error('Username must be 3–24 characters using letters, numbers, or underscores.');
       }
@@ -366,6 +363,23 @@ function AuthModal({
       if (password !== confirmPassword) throw new Error('The passwords do not match.');
       if (!termsAccepted) throw new Error('You must agree to the Terms and Conditions to create an account.');
 
+      const availabilityResponse = await fetch('/api/auth/account-availability', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          phone: parsedPhone.number,
+        }),
+      });
+      if (availabilityResponse.ok) {
+        const availability = await availabilityResponse.json() as {
+          available: boolean;
+          field?: 'phone';
+        };
+        if (!availability.available && availability.field === 'phone') {
+          throw new Error('That phone number is already registered. Log in or use Forgot password.');
+        }
+      }
+
       const supabase = getSupabaseBrowserClient();
       const redirectTo = `${window.location.origin}/auth/callback?next=/`;
       const { data, error } = await supabase.auth.signUp({
@@ -374,7 +388,6 @@ function AuthModal({
         options: {
           emailRedirectTo: redirectTo,
           data: {
-            full_name: cleanFullName,
             display_name: cleanDisplayName,
             phone_e164: parsedPhone.number,
             terms_accepted_at: new Date().toISOString(),
@@ -382,8 +395,12 @@ function AuthModal({
         },
       });
       if (error) {
-        if (error.message.includes('Database error saving new user')) {
-          throw new Error('That username or phone number may already be in use. Review your details or sign in instead.');
+        const message = error.message.toLowerCase();
+        if (message.includes('already registered') || message.includes('already exists') || message.includes('user already')) {
+          throw new Error('An account with this email already exists. Log in or use Forgot password.');
+        }
+        if (message.includes('database error saving new user')) {
+          throw new Error('The account could not be created. Review your details and try again.');
         }
         throw error;
       }
@@ -444,11 +461,11 @@ function AuthModal({
         )}
 
         <div className="auth-heading">
-          <p className="eyebrow">{mode === 'signup' ? 'SET UP YOUR DEMO ACCOUNT' : mode === 'reset' ? 'ACCOUNT RECOVERY' : 'WELCOME BACK'}</p>
+          <p className="eyebrow">{mode === 'signup' ? 'SET UP YOUR ACCOUNT' : mode === 'reset' ? 'ACCOUNT RECOVERY' : 'WELCOME BACK'}</p>
           <h2 id="auth-title">{mode === 'signup' ? 'Create your account' : mode === 'reset' ? 'Reset your password' : 'Log in to MarketPilot'}</h2>
           <p>
             {mode === 'signup'
-              ? 'Set up your profile to save your demo trade history.'
+              ? 'Set up your account and start trading today.'
               : mode === 'reset'
                 ? 'We’ll email you a secure link to choose a new password.'
                 : 'Use the email or full phone number on your account.'}
@@ -492,16 +509,23 @@ function AuthModal({
 
         {mode === 'signup' && (
           <form className="auth-form signup-form" onSubmit={signup}>
-            <div className="auth-two-columns">
-              <label className="auth-field">
-                <span>Full name</span>
-                <span className="auth-input-wrap"><UserRound size={15} /><input type="text" autoComplete="name" value={fullName} onChange={(event) => setFullName(event.target.value)} maxLength={120} required /></span>
-              </label>
-              <label className="auth-field">
-                <span>Display name (username)</span>
-                <span className="auth-input-wrap"><span className="input-at">@</span><input type="text" autoComplete="nickname" value={displayName} onChange={(event) => setDisplayName(event.target.value)} minLength={3} maxLength={24} pattern="[A-Za-z0-9_]{3,24}" required /></span>
-              </label>
-            </div>
+            <label className="auth-field">
+              <span>Display name (username)</span>
+              <span className="auth-input-wrap">
+                <span className="input-at">@</span>
+                <input
+                  type="text"
+                  autoComplete="nickname"
+                  value={displayName}
+                  onChange={(event) => setDisplayName(event.target.value)}
+                  minLength={3}
+                  maxLength={24}
+                  pattern="[A-Za-z0-9_]{3,24}"
+                  required
+                />
+              </span>
+              <small>3–24 characters: letters, numbers, and underscores only.</small>
+            </label>
             <label className="auth-field">
               <span>Email address</span>
               <span className="auth-input-wrap"><Mail size={15} /><input type="email" autoComplete="email" value={email} onChange={(event) => setEmail(event.target.value)} required /></span>
@@ -629,7 +653,6 @@ function AuthModal({
           </div>
         )}
 
-        <div className="auth-security-note"><ShieldCheck size={14} /> Passwords are secured by Supabase Auth.</div>
       </section>
     </div>,
     document.body,

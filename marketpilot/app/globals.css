@@ -182,7 +182,7 @@ h1, h2, p { margin-top: 0; }
   display: flex;
   align-items: center;
   width: 100%;
-  height: 29px;
+  height: 58px;
   padding: 0 31px 0 32px;
   color: var(--text);
   border: 1px solid var(--border);
@@ -195,7 +195,14 @@ h1, h2, p { margin-top: 0; }
 }
 .market-select-button:focus-visible { border-color: var(--blue-bright); outline: 2px solid rgba(98, 160, 255, .25); outline-offset: 1px; }
 .market-select-button:disabled { cursor: not-allowed; opacity: .6; }
-.market-select-value { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.market-select-value {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 20px;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 select option { color: var(--text); background: var(--surface); }
 .select-chevron { position: absolute; right: 10px; color: var(--text-muted); pointer-events: none; }
 .select-chevron.is-open { transform: rotate(180deg); }
@@ -205,7 +212,7 @@ select option { color: var(--text); background: var(--surface); }
   top: calc(100% + 4px);
   left: 0;
   width: 100%;
-  max-height: 204px;
+  max-height: 340px;
   overflow: auto;
   padding: 4px;
   border: 1px solid var(--border-strong);
@@ -218,15 +225,16 @@ select option { color: var(--text); background: var(--surface); }
 .market-option {
   display: block;
   width: 100%;
-  min-height: 22px;
-  padding: 4px 8px;
+  min-height: 44px;
+  padding: 8px;
   overflow: hidden;
-  color: var(--text-secondary);
+  color: var(--text);
   border: 0;
   border-radius: 4px;
   background: transparent;
   cursor: pointer;
-  font-size: 10px;
+  font-size: 20px;
+  font-weight: 800;
   text-align: left;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -418,37 +426,20 @@ select option { color: var(--text); background: var(--surface); }
 }
 .contract-tabs button:hover { color: var(--text); border-color: var(--border-strong); }
 .contract-tabs button.selected { color: var(--blue-bright); border-color: rgba(66, 133, 244, .5); background: rgba(66, 133, 244, .08); }
-.prediction-row { display: flex; gap: 7px; }
-.prediction-row select {
-  width: 100%;
-  min-width: 0;
-  height: 35px;
-  padding: 0 10px;
-  color: var(--text);
-  border: 1px solid var(--border);
-  border-radius: 7px;
-  outline: 0;
-  background: var(--surface-raised);
-  font-size: 10px;
-}
-.prediction-row select:focus, input:focus { border-color: var(--blue); }
-.prediction-row select:disabled { opacity: .55; cursor: not-allowed; }
-.digit-stepper { display: flex; flex: 0 0 auto; align-items: center; justify-content: space-between; width: 99px; height: 35px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface-raised); }
-.digit-stepper button { width: 29px; height: 100%; color: var(--text-secondary); border: 0; background: transparent; font-size: 15px; cursor: pointer; }
-.digit-stepper button:hover { color: var(--text); }
-.digit-stepper span { color: var(--text); font: 700 12px 'Manrope', sans-serif; }
-.direction-choice { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
-.direction-choice button { display: flex; align-items: center; justify-content: center; gap: 6px; height: 35px; color: var(--text-secondary); border: 1px solid var(--border); border-radius: 7px; background: var(--surface-raised); font-size: 10px; font-weight: 700; cursor: pointer; }
-.direction-choice button.rise.selected { color: var(--green); border-color: rgba(43, 196, 138, .4); background: rgba(43, 196, 138, .07); }
-.direction-choice button.fall.selected { color: var(--red); border-color: rgba(240, 108, 117, .4); background: rgba(240, 108, 117, .07); }
-.not-supported { grid-column: 1 / -1; color: var(--text-muted); font-size: 9px; line-height: 1.45; }
 .control-row { display: grid; grid-template-columns: .85fr 1.15fr; gap: 9px; }
+.control-row--three { direction: rtl; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.control-row--three .form-field { direction: ltr; }
 .control-row .form-field { margin-bottom: 11px; }
-.input-suffix, .input-prefix { position: relative; display: flex; align-items: center; }
-.input-suffix input, .input-prefix input {
+.prediction-digit-input,
+.input-suffix,
+.input-prefix { position: relative; }
+.prediction-digit-input,
+.input-suffix input,
+.input-prefix input {
   width: 100%;
   height: 35px;
   min-width: 0;
+  padding: 0 10px;
   color: var(--text);
   border: 1px solid var(--border);
   border-radius: 7px;
@@ -488,12 +479,7 @@ select option { color: var(--text); background: var(--surface); }
 .contract-action-name { grid-area: name; overflow: hidden; font-size: 10px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
 .contract-action-payout { grid-area: payout; font: 700 15px 'Manrope', sans-serif; font-variant-numeric: tabular-nums; }
 .contract-action-button small { grid-area: detail; color: var(--text-secondary); font-size: 8px; line-height: 1.4; overflow-wrap: anywhere; }
-.practice-disclaimer { margin: 8px 0 0; color: var(--text-muted); font-size: 8px; line-height: 1.5; text-align: center; }
 .open-trade-note { display: flex; align-items: center; gap: 7px; padding-top: 10px; margin-top: 10px; color: var(--text-secondary); border-top: 1px solid var(--border); font-size: 9px; }
-.provider-note { display: flex; align-items: start; gap: 9px; padding: 13px 14px; color: var(--blue-bright); border: 1px solid rgba(66, 133, 244, .16); border-radius: 10px; background: rgba(66, 133, 244, .045); }
-.provider-note p { margin: 0; color: var(--text-secondary); font-size: 9px; line-height: 1.55; }
-.page-footer { display: flex; justify-content: space-between; gap: 12px; padding: 19px 2px 2px; color: var(--text-muted); font-size: 9px; }
-.page-footer i { padding: 0 3px; color: var(--border-strong); font-style: normal; }
 
 @keyframes pulse { 0%, 100% { opacity: .45; } 50% { opacity: 1; } }
 
@@ -571,10 +557,8 @@ select option { color: var(--text); background: var(--surface); }
   .digit-percentage { font-size: 8px; }
   .side-column { grid-template-columns: 1fr; }
   .practice-panel { padding: 16px 14px; }
-  .provider-note { padding: 11px; }
   .trade-row { gap: 7px; }
   .trade-info strong { display: grid; gap: 2px; }
-  .page-footer { flex-direction: column; gap: 6px; padding-top: 14px; }
   .connection-alert { align-items: start; padding: 11px; }
   .connection-alert span { line-height: 1.5; }
 }
