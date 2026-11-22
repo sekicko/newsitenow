@@ -7,11 +7,10 @@ import {
   ColorType,
   CrosshairMode,
   createChart,
-  type IChartApi,
-  type ISeriesApi,
   type AreaData,
   type CandlestickData,
-  type Time,
+  type IChartApi,
+  type ISeriesApi,
   type UTCTimestamp,
 } from 'lightweight-charts';
 import type { ChartStyle, MarketCandle, MarketTick } from '@/lib/deriv-client';
@@ -64,31 +63,20 @@ export function PriceChart({ symbol, interval, ticks, candles, chartStyle, loadi
       },
       timeScale: {
         borderColor: dark ? '#293344' : '#e5e9ef',
-        timeVisible: true,
-        secondsVisible: true,
+        timeVisible: false,
+        secondsVisible: false,
         rightOffset: 4,
         rightOffsetPixels: 112,
         barSpacing: 8,
+        tickMarkFormatter: () => '',
       },
       crosshair: {
         mode: CrosshairMode.Normal,
-        vertLine: { color: dark ? '#77849a' : '#8794a8', labelBackgroundColor: '#2463eb' },
+        vertLine: { color: dark ? '#77849a' : '#8794a8', labelVisible: false },
         horzLine: { color: dark ? '#77849a' : '#8794a8', labelBackgroundColor: '#2463eb' },
       },
       handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: false, vertTouchDrag: false },
       handleScale: { axisPressedMouseMove: true, mouseWheel: true, pinch: true },
-      localization: {
-        timeFormatter: (time: Time) => {
-          const epoch = typeof time === 'number' ? time : 0;
-          return new Date(epoch * 1_000).toLocaleString(undefined, {
-            month: 'short',
-            day: 'numeric',
-            hour: '2-digit',
-            minute: '2-digit',
-            second: '2-digit',
-          });
-        },
-      },
     });
     const areaSeries = chartStyle === 'area'
       ? chart.addSeries(AreaSeries, {
@@ -120,13 +108,18 @@ export function PriceChart({ symbol, interval, ticks, candles, chartStyle, loadi
     candleSeriesRef.current = candleSeries;
 
     type TouchGesture =
-      | { kind: 'press'; startX: number; startedAt: number; range: { from: number; to: number } | null }
-      | { kind: 'pan'; startX: number; range: { from: number; to: number }; plotWidth: number }
-      | { kind: 'price-scale'; startY: number; range: { from: number; to: number } };
+      | { kind: 'press'; startX: number; startY: number; logicalRange: { from: number; to: number }; priceRange: { from: number; to: number } | null; timer: number }
+      | { kind: 'pan'; startX: number; startY: number; logicalRange: { from: number; to: number }; priceRange: { from: number; to: number } | null; plotWidth: number; plotHeight: number }
+      | { kind: 'price-scale'; startY: number; range: { from: number; to: number }; plotHeight: number }
+      | { kind: 'time-scale'; startX: number; barSpacing: number };
     let touchGesture: TouchGesture | null = null;
+    const clearTouchGesture = () => {
+      if (touchGesture?.kind === 'press') window.clearTimeout(touchGesture.timer);
+      touchGesture = null;
+    };
     const onTouchStart = (event: TouchEvent) => {
+      clearTouchGesture();
       if (event.touches.length !== 1) {
-        touchGesture = null;
         return;
       }
 
@@ -135,65 +128,100 @@ export function PriceChart({ symbol, interval, ticks, candles, chartStyle, loadi
       const x = touch.clientX - rect.left;
       const y = touch.clientY - rect.top;
       const priceScale = chart.priceScale('right');
-      const range = (areaSeries ?? candleSeries)?.priceScale().getVisibleRange() ?? null;
+      const activeSeries = areaSeries ?? candleSeries;
+      const range = activeSeries?.priceScale().getVisibleRange() ?? null;
+      const plotHeight = Math.max(1, rect.height - chart.timeScale().height());
+
       if (x >= rect.width - priceScale.width() && range) {
-        touchGesture = { kind: 'price-scale', startY: y, range };
+        touchGesture = { kind: 'price-scale', startY: y, range, plotHeight };
         return;
       }
 
-      touchGesture = {
+      const timeScaleHeight = Math.max(chart.timeScale().height(), 24);
+      if (y >= rect.height - timeScaleHeight) {
+        touchGesture = {
+          kind: 'time-scale',
+          startX: x,
+          barSpacing: chart.timeScale().options().barSpacing,
+        };
+        return;
+      }
+
+      const logicalRange = chart.timeScale().getVisibleLogicalRange();
+      if (!logicalRange) return;
+      const pressGesture: TouchGesture = {
         kind: 'press',
         startX: x,
-        startedAt: event.timeStamp,
-        range: chart.timeScale().getVisibleLogicalRange(),
+        startY: y,
+        logicalRange,
+        priceRange: range,
+        timer: window.setTimeout(() => {
+          if (touchGesture !== pressGesture) return;
+          touchGesture = {
+            kind: 'pan',
+            startX: x,
+            startY: y,
+            logicalRange,
+            priceRange: range,
+            plotWidth: Math.max(1, chart.timeScale().width()),
+            plotHeight,
+          };
+        }, 400),
       };
+      touchGesture = pressGesture;
     };
     const onTouchMove = (event: TouchEvent) => {
-      if (event.touches.length !== 1 || !touchGesture) return;
+      if (event.touches.length !== 1 || !touchGesture) {
+        clearTouchGesture();
+        return;
+      }
 
       const touch = event.touches[0];
       const rect = container.getBoundingClientRect();
       const x = touch.clientX - rect.left;
       const y = touch.clientY - rect.top;
 
-      if (touchGesture.kind === 'price-scale') {
-        const activeSeries = areaSeries ?? candleSeries;
-        if (!activeSeries) return;
-        const zoom = Math.min(8, Math.max(0.125, Math.exp((touchGesture.startY - y) / (rect.height * 0.75))));
-        const middle = (touchGesture.range.from + touchGesture.range.to) / 2;
-        const halfRange = (touchGesture.range.to - touchGesture.range.from) / (2 * zoom);
-        if (!Number.isFinite(halfRange) || halfRange <= 0) return;
-
-        event.preventDefault();
-        const priceScale = activeSeries.priceScale();
-        priceScale.setAutoScale(false);
-        priceScale.setVisibleRange({ from: middle - halfRange, to: middle + halfRange });
+      if (touchGesture.kind === 'press') {
+        if (Math.hypot(x - touchGesture.startX, y - touchGesture.startY) > 8) clearTouchGesture();
         return;
       }
 
-      if (touchGesture.kind === 'press') {
-        if (event.timeStamp - touchGesture.startedAt < 400 || !touchGesture.range) return;
-        touchGesture = {
-          kind: 'pan',
-          startX: touchGesture.startX,
-          range: touchGesture.range,
-          plotWidth: Math.max(1, chart.timeScale().width()),
-        };
-      }
-
-      if (touchGesture.kind === 'pan') {
-        event.preventDefault();
-        const rangeWidth = touchGesture.range.to - touchGesture.range.from;
-        const offset = ((x - touchGesture.startX) / touchGesture.plotWidth) * rangeWidth;
+      event.preventDefault();
+      if (touchGesture.kind === 'price-scale') {
+        const zoom = Math.min(8, Math.max(0.125, Math.exp((touchGesture.startY - y) / (touchGesture.plotHeight * 0.75))));
+        const middle = (touchGesture.range.from + touchGesture.range.to) / 2;
+        const halfRange = (touchGesture.range.to - touchGesture.range.from) / (2 * zoom);
+        if (!Number.isFinite(halfRange) || halfRange <= 0) return;
+        const activeSeries = areaSeries ?? candleSeries;
+        if (!activeSeries) return;
+        const priceScale = activeSeries.priceScale();
+        priceScale.setAutoScale(false);
+        priceScale.setVisibleRange({ from: middle - halfRange, to: middle + halfRange });
+      } else if (touchGesture.kind === 'time-scale') {
+        const barSpacing = Math.min(50, Math.max(1, touchGesture.barSpacing * Math.exp((touchGesture.startX - x) / 160)));
+        chart.timeScale().applyOptions({ barSpacing });
+      } else {
+        const deltaX = x - touchGesture.startX;
+        const deltaY = y - touchGesture.startY;
+        const rangeWidth = touchGesture.logicalRange.to - touchGesture.logicalRange.from;
         chart.timeScale().setVisibleLogicalRange({
-          from: touchGesture.range.from - offset,
-          to: touchGesture.range.to - offset,
+          from: touchGesture.logicalRange.from - (deltaX / touchGesture.plotWidth) * rangeWidth,
+          to: touchGesture.logicalRange.to - (deltaX / touchGesture.plotWidth) * rangeWidth,
         });
+        if (touchGesture.priceRange && deltaY !== 0) {
+          const activeSeries = areaSeries ?? candleSeries;
+          if (!activeSeries) return;
+          const priceScale = activeSeries.priceScale();
+          const priceOffset = (deltaY / touchGesture.plotHeight) * (touchGesture.priceRange.to - touchGesture.priceRange.from);
+          priceScale.setAutoScale(false);
+          priceScale.setVisibleRange({
+            from: touchGesture.priceRange.from + priceOffset,
+            to: touchGesture.priceRange.to + priceOffset,
+          });
+        }
       }
     };
-    const onTouchEnd = () => {
-      touchGesture = null;
-    };
+    const onTouchEnd = () => clearTouchGesture();
     container.addEventListener('touchstart', onTouchStart, { passive: true });
     container.addEventListener('touchmove', onTouchMove, { passive: false });
     container.addEventListener('touchend', onTouchEnd, { passive: true });
@@ -210,7 +238,6 @@ export function PriceChart({ symbol, interval, ticks, candles, chartStyle, loadi
           scaleMargins: { top: 0.12, bottom: 0.12 },
         },
         timeScale: {
-          secondsVisible: width >= 520,
           barSpacing: width < 420 ? 4 : width < 760 ? 6 : 8,
           rightOffsetPixels: Math.min(112, Math.max(48, width * 0.18)),
         },
@@ -220,6 +247,7 @@ export function PriceChart({ symbol, interval, ticks, candles, chartStyle, loadi
     resizeObserver.observe(containerRef.current);
     return () => {
       resizeObserver.disconnect();
+      clearTouchGesture();
       container.removeEventListener('touchstart', onTouchStart);
       container.removeEventListener('touchmove', onTouchMove);
       container.removeEventListener('touchend', onTouchEnd);
