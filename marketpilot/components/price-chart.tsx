@@ -52,6 +52,7 @@ export function PriceChart({ symbol, interval, ticks, candles, chartStyle, loadi
   useEffect(() => {
     if (!containerRef.current) return;
     const dark = theme === 'dark';
+    const container = containerRef.current;
     const chart = createChart(containerRef.current, {
       autoSize: true,
       layout: {
@@ -147,6 +148,50 @@ export function PriceChart({ symbol, interval, ticks, candles, chartStyle, loadi
     areaSeriesRef.current = areaSeries;
     candleSeriesRef.current = candleSeries;
 
+    let pinchStart: { distanceY: number; from: number; to: number } | null = null;
+    const onTouchStart = (event: TouchEvent) => {
+      if (event.touches.length !== 2) {
+        pinchStart = null;
+        return;
+      }
+
+      const activeSeries = areaSeries ?? candleSeries;
+      const range = activeSeries?.priceScale().getVisibleRange();
+      if (!range) {
+        pinchStart = null;
+        return;
+      }
+
+      pinchStart = {
+        distanceY: Math.abs(event.touches[0].clientY - event.touches[1].clientY),
+        from: range.from,
+        to: range.to,
+      };
+    };
+    const onTouchMove = (event: TouchEvent) => {
+      if (event.touches.length !== 2 || !pinchStart || pinchStart.distanceY < 1) return;
+
+      const distanceY = Math.abs(event.touches[0].clientY - event.touches[1].clientY);
+      const zoom = Math.min(8, Math.max(0.125, distanceY / pinchStart.distanceY));
+      const middle = (pinchStart.from + pinchStart.to) / 2;
+      const halfRange = (pinchStart.to - pinchStart.from) / (2 * zoom);
+      if (!Number.isFinite(halfRange) || halfRange <= 0) return;
+
+      event.preventDefault();
+      const activeSeries = areaSeries ?? candleSeries;
+      if (!activeSeries) return;
+      const priceScale = activeSeries.priceScale();
+      priceScale.setAutoScale(false);
+      priceScale.setVisibleRange({ from: middle - halfRange, to: middle + halfRange });
+    };
+    const onTouchEnd = () => {
+      pinchStart = null;
+    };
+    container.addEventListener('touchstart', onTouchStart, { passive: true });
+    container.addEventListener('touchmove', onTouchMove, { passive: false });
+    container.addEventListener('touchend', onTouchEnd, { passive: true });
+    container.addEventListener('touchcancel', onTouchEnd, { passive: true });
+
     const resizeObserver = new ResizeObserver(([entry]) => {
       const { width } = entry.contentRect;
       if (width <= 0) return;
@@ -168,6 +213,10 @@ export function PriceChart({ symbol, interval, ticks, candles, chartStyle, loadi
     resizeObserver.observe(containerRef.current);
     return () => {
       resizeObserver.disconnect();
+      container.removeEventListener('touchstart', onTouchStart);
+      container.removeEventListener('touchmove', onTouchMove);
+      container.removeEventListener('touchend', onTouchEnd);
+      container.removeEventListener('touchcancel', onTouchEnd);
       chart.remove();
       chartRef.current = null;
       areaSeriesRef.current = null;
@@ -213,6 +262,7 @@ export function PriceChart({ symbol, interval, ticks, candles, chartStyle, loadi
       dataCount < previousView.count / 2
     );
     if (dataCount && (viewChanged || historyChanged)) {
+      (areaSeriesRef.current ?? candleSeriesRef.current)?.priceScale().setAutoScale(true);
       chart.timeScale().fitContent();
     } else {
       const timeScale = chart.timeScale();
