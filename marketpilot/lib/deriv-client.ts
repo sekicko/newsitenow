@@ -10,7 +10,7 @@ type PendingRequest = {
 const DEFAULT_WS_URL = 'wss://api.derivws.com/trading/v1/options/ws/public';
 
 export function getDerivWsUrl(): string {
-  return process.env.NEXT_PUBLIC_DERIV_WS_URL?.trim() || DEFAULT_WS_URL;
+  return process.env.DERIV_WS_URL?.trim() || DEFAULT_WS_URL;
 }
 
 export class DerivClient {

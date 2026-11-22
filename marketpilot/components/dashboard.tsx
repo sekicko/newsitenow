@@ -3,8 +3,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import {
   Activity,
-  ArrowDownRight,
-  ArrowUpRight,
   BarChart3,
   ChevronDown,
   Clock3,
@@ -242,7 +240,7 @@ export function MarketPilotDashboard() {
   const [theme, setTheme] = useState<'dark' | 'light'>('dark');
   const [kind, setKind] = useState<PracticeKind>('over-under');
   const [contractType, setContractType] = useState(contractDefaults['over-under']);
-  const [digit, setDigit] = useState(4);
+  const [digit, setDigit] = useState(3);
   const [duration, setDuration] = useState(5);
   const [stake, setStake] = useState(1);
   const [quote, setQuote] = useState<PracticeQuote | null>(null);
@@ -954,7 +952,6 @@ export function MarketPilotDashboard() {
             <span className="brand-mark"><Activity size={20} strokeWidth={2.2} /></span>
             <span className="brand-copy">
               <strong>MarketPilot</strong>
-              <small>Explore the market. Trade with clarity.</small>
             </span>
           </a>
         </div>
@@ -1254,12 +1251,10 @@ export function MarketPilotDashboard() {
             <section className="panel practice-panel">
               <div className="practice-panel-header">
                 <div>
-                  <p className="eyebrow">DEMO ACCOUNT</p>
-                  <h2>Place a demo trade</h2>
+                  <h2>Place a trade</h2>
                 </div>
                 <span className="practice-icon"><Activity size={17} /></span>
               </div>
-              <p className="practice-intro">Trade using live market prices. No live orders are placed.</p>
 
               <div className="form-field">
                 <label>Contract type</label>
@@ -1278,47 +1273,25 @@ export function MarketPilotDashboard() {
                 </div>
               </div>
 
-              <div className="form-field">
-                <label htmlFor="outcome-select">Prediction</label>
-                {kind === 'rise-fall' ? (
-                  <div className="direction-choice">
-                    {availableChoices.map((type) => (
-                      <button
-                        key={type}
-                        type="button"
-                        className={`${selectedContractType === type ? 'selected' : ''} ${type === 'CALL' ? 'rise' : 'fall'}`}
-                        onClick={() => setContractType(type)}
-                      >
-                        {type === 'CALL' ? <ArrowUpRight size={16} /> : <ArrowDownRight size={16} />}
-                        {CONTRACT_LABELS[type]}
-                      </button>
-                    ))}
-                    {!availableChoices.length && <span className="not-supported">No Rise/Fall contracts returned for this market.</span>}
-                  </div>
-                ) : (
-                  <div className="prediction-row">
-                    <select
-                      id="outcome-select"
-                      value={selectedContractType}
-                      onChange={(event) => setContractType(event.target.value)}
-                      disabled={!availableChoices.length}
-                    >
-                      {availableChoices.map((type) => (
-                        <option key={type} value={type}>{CONTRACT_LABELS[type]}</option>
-                      ))}
-                    </select>
-                    {['over-under', 'matches-differs'].includes(kind) && (
-                      <div className="digit-stepper">
-                        <button type="button" onClick={() => setDigit((value) => Math.max(0, value - 1))} aria-label="Decrease prediction digit">−</button>
-                        <span>{digit}</span>
-                        <button type="button" onClick={() => setDigit((value) => Math.min(9, value + 1))} aria-label="Increase prediction digit">+</button>
-                      </div>
-                    )}
+              <div className={`control-row ${['over-under', 'matches-differs'].includes(kind) ? 'control-row--three' : ''}`}>
+                {['over-under', 'matches-differs'].includes(kind) && (
+                  <div className="form-field">
+                    <label htmlFor="prediction-digit">Prediction Digit</label>
+                    <input
+                      id="prediction-digit"
+                      className="prediction-digit-input"
+                      type="number"
+                      min="0"
+                      max="9"
+                      step="1"
+                      value={digit}
+                      onChange={(event) => {
+                        const value = event.target.value === '' ? 0 : Number(event.target.value);
+                        setDigit(Number.isFinite(value) ? Math.max(0, Math.min(9, Math.round(value))) : 3);
+                      }}
+                    />
                   </div>
                 )}
-              </div>
-
-              <div className="control-row">
                 <div className="form-field">
                   <label htmlFor="duration">Duration</label>
                   <div className="input-suffix">
@@ -1353,8 +1326,6 @@ export function MarketPilotDashboard() {
 
               {renderContractActions('inline')}
               {tradeActionError && <p className="trade-action-error" role="status">{tradeActionError}</p>}
-              <p className="practice-disclaimer">Demo only · stake is deducted on open · quoted payout is returned on a win · no real order is submitted</p>
-
               {trades.some((trade) => trade.accountType === activeWallet && trade.status === 'Open' && trade.symbol === market.selectedSymbol) && (
                 <div className="open-trade-note">
                   <span className="loading-dot" />
@@ -1362,17 +1333,8 @@ export function MarketPilotDashboard() {
                 </div>
               )}
             </section>
-            <div className="provider-note">
-              <Wifi size={14} />
-              <p>Market data supplies prices, symbols, contract conditions, and proposals. No backup or generated data is shown.</p>
-            </div>
           </aside>
         </div>
-
-        <footer className="page-footer">
-          <span>MarketPilot <i>·</i> Explore the market. Trade with clarity.</span>
-          <span>Market data · Simulated trading only</span>
-        </footer>
       </div>
       {mobilePage === 'hub' && renderContractActions('floating')}
     </main>
