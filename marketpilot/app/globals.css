@@ -78,10 +78,7 @@ a { color: inherit; text-decoration: none; }
   border-bottom: 1px solid rgba(255, 255, 255, .18);
   background: #4B4BAC;
   backdrop-filter: blur(18px);
-  transition: padding-bottom .18s ease;
 }
-.topbar:has(.wallet-menu) { height: auto; min-height: 72px; padding-bottom: 136px; }
-
 .brand { display: flex; align-items: center; gap: 11px; min-width: 290px; }
 .brand-link { display: flex; min-width: 0; align-items: center; gap: 11px; color: inherit; }
 .brand-mark {
@@ -875,7 +872,8 @@ select option { color: var(--text); background: var(--surface); }
 
 @media (max-width: 600px) {
   .topbar { padding-right: 12px; padding-left: 12px; }
-  .header-actions { order: 2; gap: 6px; }
+  .brand { order: 1; }
+  .header-actions { order: 2; width: 100%; justify-content: flex-end; gap: 6px; padding-top: 8px; }
   .main-nav { display: none; }
   .mobile-menu-layer { display: block; }
   .mobile-menu-toggle { display: grid; flex: 0 0 auto; width: 30px; height: 30px; place-items: center; padding: 0; color: var(--text-secondary); border: 1px solid var(--border); border-radius: 7px; background: var(--surface); cursor: pointer; }
@@ -894,9 +892,23 @@ select option { color: var(--text); background: var(--surface); }
   .account-button { height: 30px; padding: 0 7px; font-size: 9px; }
   .account-user { gap: 4px; }
   .account-user-name { display: none; }
-  .wallet-switcher { width: 146px; height: 30px; }
+  .wallet-switcher { width: 126px; height: 30px; }
   .wallet-switcher-trigger { gap: 4px; padding: 0 6px; }
   .wallet-switcher-trigger strong { font-size: 10px; }
+  .wallet-menu { right: auto; left: 0; width: min(250px, calc(100vw - 24px)); }
+  .market-summary { align-items: start; }
+  .market-select-wrap { width: 100%; min-width: 0; }
+  .market-select-wrap > label { align-items: flex-start; flex-direction: column; gap: 4px; }
+  .market-status { margin-left: 0; font-size: 8px; }
+  .market-select-button { height: 42px; padding-right: 28px; padding-left: 32px; }
+  .market-select-value { font-size: 12px; }
+  .market-select-wrap.is-open .market-options {
+    position: static;
+    width: 100%;
+    max-height: min(240px, 42dvh);
+    margin-top: 4px;
+  }
+  .market-option { min-height: 36px; font-size: 12px; }
   .auth-overlay { padding: 12px; }
   .auth-dialog { max-height: calc(100vh - 24px); max-height: calc(100dvh - 24px); }
   .auth-dialog { padding: 22px 18px 17px; }
