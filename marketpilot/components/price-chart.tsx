@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef } from 'react';
 import {
   AreaSeries,
   CandlestickSeries,
@@ -33,14 +33,6 @@ export function PriceChart({ symbol, interval, ticks, candles, chartStyle, loadi
   const areaSeriesRef = useRef<ISeriesApi<'Area'> | null>(null);
   const candleSeriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null);
   const fittedViewRef = useRef<{ chart: IChartApi; key: string; count: number } | null>(null);
-  const [hover, setHover] = useState<{
-    time: Time;
-    value?: number;
-    open?: number;
-    high?: number;
-    low?: number;
-    close?: number;
-  } | null>(null);
   const latestTick = ticks.at(-1);
   const latestCandle = candles.at(-1);
   const latestPrice = chartStyle === 'candlestick' ? latestCandle?.close : latestTick?.quote;
@@ -83,7 +75,7 @@ export function PriceChart({ symbol, interval, ticks, candles, chartStyle, loadi
         vertLine: { color: dark ? '#77849a' : '#8794a8', labelBackgroundColor: '#2463eb' },
         horzLine: { color: dark ? '#77849a' : '#8794a8', labelBackgroundColor: '#2463eb' },
       },
-      handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: false },
+      handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: false, vertTouchDrag: false },
       handleScale: { axisPressedMouseMove: true, mouseWheel: true, pinch: true },
       localization: {
         timeFormatter: (time: Time) => {
@@ -123,69 +115,84 @@ export function PriceChart({ symbol, interval, ticks, candles, chartStyle, loadi
           priceFormat: { type: 'price', precision, minMove: 10 ** -precision },
         })
       : null;
-    chart.subscribeCrosshairMove((param) => {
-      if (!param.time) {
-        setHover(null);
-        return;
-      }
-      if (areaSeries) {
-        const data = param.seriesData.get(areaSeries) as AreaData<Time> | undefined;
-        if (typeof data?.value === 'number') {
-          setHover({ time: param.time, value: data.value });
-          return;
-        }
-      }
-      if (candleSeries) {
-        const data = param.seriesData.get(candleSeries) as CandlestickData<Time> | undefined;
-        if (typeof data?.close === 'number') {
-          setHover({ time: param.time, open: data.open, high: data.high, low: data.low, close: data.close });
-          return;
-        }
-      }
-      setHover(null);
-    });
     chartRef.current = chart;
     areaSeriesRef.current = areaSeries;
     candleSeriesRef.current = candleSeries;
 
-    let pinchStart: { distanceY: number; from: number; to: number } | null = null;
+    type TouchGesture =
+      | { kind: 'press'; startX: number; startedAt: number; range: { from: number; to: number } | null }
+      | { kind: 'pan'; startX: number; range: { from: number; to: number }; plotWidth: number }
+      | { kind: 'price-scale'; startY: number; range: { from: number; to: number } };
+    let touchGesture: TouchGesture | null = null;
     const onTouchStart = (event: TouchEvent) => {
-      if (event.touches.length !== 2) {
-        pinchStart = null;
+      if (event.touches.length !== 1) {
+        touchGesture = null;
         return;
       }
 
-      const activeSeries = areaSeries ?? candleSeries;
-      const range = activeSeries?.priceScale().getVisibleRange();
-      if (!range) {
-        pinchStart = null;
+      const touch = event.touches[0];
+      const rect = container.getBoundingClientRect();
+      const x = touch.clientX - rect.left;
+      const y = touch.clientY - rect.top;
+      const priceScale = chart.priceScale('right');
+      const range = (areaSeries ?? candleSeries)?.priceScale().getVisibleRange() ?? null;
+      if (x >= rect.width - priceScale.width() && range) {
+        touchGesture = { kind: 'price-scale', startY: y, range };
         return;
       }
 
-      pinchStart = {
-        distanceY: Math.abs(event.touches[0].clientY - event.touches[1].clientY),
-        from: range.from,
-        to: range.to,
+      touchGesture = {
+        kind: 'press',
+        startX: x,
+        startedAt: event.timeStamp,
+        range: chart.timeScale().getVisibleLogicalRange(),
       };
     };
     const onTouchMove = (event: TouchEvent) => {
-      if (event.touches.length !== 2 || !pinchStart || pinchStart.distanceY < 1) return;
+      if (event.touches.length !== 1 || !touchGesture) return;
 
-      const distanceY = Math.abs(event.touches[0].clientY - event.touches[1].clientY);
-      const zoom = Math.min(8, Math.max(0.125, distanceY / pinchStart.distanceY));
-      const middle = (pinchStart.from + pinchStart.to) / 2;
-      const halfRange = (pinchStart.to - pinchStart.from) / (2 * zoom);
-      if (!Number.isFinite(halfRange) || halfRange <= 0) return;
+      const touch = event.touches[0];
+      const rect = container.getBoundingClientRect();
+      const x = touch.clientX - rect.left;
+      const y = touch.clientY - rect.top;
 
-      event.preventDefault();
-      const activeSeries = areaSeries ?? candleSeries;
-      if (!activeSeries) return;
-      const priceScale = activeSeries.priceScale();
-      priceScale.setAutoScale(false);
-      priceScale.setVisibleRange({ from: middle - halfRange, to: middle + halfRange });
+      if (touchGesture.kind === 'price-scale') {
+        const activeSeries = areaSeries ?? candleSeries;
+        if (!activeSeries) return;
+        const zoom = Math.min(8, Math.max(0.125, Math.exp((touchGesture.startY - y) / (rect.height * 0.75))));
+        const middle = (touchGesture.range.from + touchGesture.range.to) / 2;
+        const halfRange = (touchGesture.range.to - touchGesture.range.from) / (2 * zoom);
+        if (!Number.isFinite(halfRange) || halfRange <= 0) return;
+
+        event.preventDefault();
+        const priceScale = activeSeries.priceScale();
+        priceScale.setAutoScale(false);
+        priceScale.setVisibleRange({ from: middle - halfRange, to: middle + halfRange });
+        return;
+      }
+
+      if (touchGesture.kind === 'press') {
+        if (event.timeStamp - touchGesture.startedAt < 400 || !touchGesture.range) return;
+        touchGesture = {
+          kind: 'pan',
+          startX: touchGesture.startX,
+          range: touchGesture.range,
+          plotWidth: Math.max(1, chart.timeScale().width()),
+        };
+      }
+
+      if (touchGesture.kind === 'pan') {
+        event.preventDefault();
+        const rangeWidth = touchGesture.range.to - touchGesture.range.from;
+        const offset = ((x - touchGesture.startX) / touchGesture.plotWidth) * rangeWidth;
+        chart.timeScale().setVisibleLogicalRange({
+          from: touchGesture.range.from - offset,
+          to: touchGesture.range.to - offset,
+        });
+      }
     };
     const onTouchEnd = () => {
-      pinchStart = null;
+      touchGesture = null;
     };
     container.addEventListener('touchstart', onTouchStart, { passive: true });
     container.addEventListener('touchmove', onTouchMove, { passive: false });
@@ -278,28 +285,6 @@ export function PriceChart({ symbol, interval, ticks, candles, chartStyle, loadi
 
   return (
     <div className="chart-wrap">
-      <div className="chart-hover">
-        {hover ? (
-          <>
-            <span>{new Date(Number(hover.time) * 1_000).toLocaleString()}</span>
-            {hover.open !== undefined ? (
-              <strong>O {hover.open.toFixed(precision)} · H {hover.high?.toFixed(precision)} · L {hover.low?.toFixed(precision)} · C {hover.close?.toFixed(precision)}</strong>
-            ) : (
-              <strong>{hover.value?.toFixed(precision)}</strong>
-            )}
-          </>
-        ) : latestPrice !== undefined ? (
-          <>
-            <span>
-              {chartStyle === 'candlestick' ? 'Latest candle' : 'Latest tick'} ·{' '}
-              {new Date((latestCandle?.epoch ?? latestTick?.epoch ?? 0) * 1_000).toLocaleTimeString()}
-            </span>
-            <strong>{latestPrice.toFixed(precision)}</strong>
-          </>
-        ) : (
-          <span>Waiting for genuine {chartStyle === 'candlestick' ? 'candle' : 'market'} data…</span>
-        )}
-      </div>
       <div
         ref={containerRef}
         className="chart-canvas"
