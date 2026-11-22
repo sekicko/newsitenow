@@ -30,7 +30,7 @@ import {
   type MarketTick,
   type PracticeKind,
 } from '@/lib/deriv-client';
-import { type PracticeTrade, contractWon } from '@/lib/practice';
+import { type PracticeTrade } from '@/lib/practice';
 import { getSupabaseBrowserClient } from '@/lib/supabase/browser';
 import type { User } from '@supabase/supabase-js';
 import type { WalletAccount, WalletBalances } from '@/lib/wallets';
@@ -64,6 +64,7 @@ type DigitExitHighlight = {
   symbol: string;
   digit: number;
   outcome: 'win' | 'loss';
+  outcomeSource: 'market_data' | 'test_simulation';
 };
 
 function storedNumber(value: unknown): number | null {
@@ -91,6 +92,8 @@ function parseStoredTrade(value: unknown, entrySerial: number): PracticeTrade | 
   const entryDigit = storedNumber(row.entry_digit);
   const entryEpoch = storedNumber(row.entry_epoch);
   const elapsed = storedNumber(row.elapsed);
+  const outcomeSource = row.outcome_source ?? 'market_data';
+  const testWinProbability = row.test_win_probability == null ? null : storedNumber(row.test_win_probability);
   if (
     duration === null ||
     stake === null ||
@@ -100,6 +103,9 @@ function parseStoredTrade(value: unknown, entrySerial: number): PracticeTrade | 
     entryDigit === null ||
     entryEpoch === null ||
     elapsed === null ||
+    (outcomeSource !== 'market_data' && outcomeSource !== 'test_simulation') ||
+    (row.test_win_probability != null &&
+      (testWinProbability === null || testWinProbability < 0 || testWinProbability > 100)) ||
     typeof row.duration_unit !== 'string'
   ) return null;
 
@@ -139,6 +145,8 @@ function parseStoredTrade(value: unknown, entrySerial: number): PracticeTrade | 
     entrySerial,
     elapsed: Math.min(elapsed, duration),
     status: row.status === 'open' ? 'Open' : row.status === 'won' ? 'Won' : 'Lost',
+    outcomeSource,
+    testWinProbability,
     ...(exitPrice === null ? {} : { exitPrice }),
     ...(exitPipSize === null ? {} : { exitPipSize }),
     ...(exitDigit === null ? {} : { exitDigit }),
@@ -154,6 +162,43 @@ function localTime(epoch: number): string {
     minute: '2-digit',
     second: '2-digit',
   });
+}
+
+type SettlementResult = {
+  balance: number;
+  status: 'won' | 'lost';
+  payout: number;
+  profit: number;
+  outcomeSource: 'market_data' | 'test_simulation';
+  testWinProbability: number | null;
+};
+
+function parseSettlementResult(value: unknown): SettlementResult | null {
+  if (!value || typeof value !== 'object') return null;
+  const row = value as Record<string, unknown>;
+  const balance = storedNumber(row.balance);
+  const payout = storedNumber(row.payout);
+  const profit = storedNumber(row.profit);
+  const testWinProbability = row.testWinProbability === null
+    ? null
+    : storedNumber(row.testWinProbability);
+  if (
+    balance === null ||
+    payout === null ||
+    profit === null ||
+    (row.status !== 'won' && row.status !== 'lost') ||
+    (row.outcomeSource !== 'market_data' && row.outcomeSource !== 'test_simulation') ||
+    (row.testWinProbability !== null && row.testWinProbability !== undefined &&
+      (testWinProbability === null || testWinProbability < 0 || testWinProbability > 100))
+  ) return null;
+  return {
+    balance,
+    status: row.status,
+    payout,
+    profit,
+    outcomeSource: row.outcomeSource,
+    testWinProbability,
+  };
 }
 
 function displayDuration(contract: AvailableContract | undefined) {
@@ -347,6 +392,11 @@ export function MarketPilotDashboard() {
   const selectedDigitExitHighlight = digitExitHighlight?.symbol === market.selectedSymbol
     ? digitExitHighlight
     : null;
+  const digitExitDescription = selectedDigitExitHighlight
+    ? selectedDigitExitHighlight.outcomeSource === 'test_simulation'
+      ? ` The synthetic ${selectedDigitExitHighlight.outcome} result used the actual market exit digit ${selectedDigitExitHighlight.digit}.`
+      : ` The ${selectedDigitExitHighlight.outcome} trade exit digit ${selectedDigitExitHighlight.digit} is highlighted temporarily.`
+    : '';
   const pointerDigit = activeDigitTrade ? activeDigit : selectedDigitExitHighlight?.digit ?? activeDigit;
   const digitPercentages = useMemo(() => {
     const ticksBeforeLatest = market.chartTicks.slice(0, -1).slice(-1_000);
@@ -639,8 +689,6 @@ export function MarketPilotDashboard() {
 
       const userId = authUser.id;
       settlingTradeIdsRef.current.add(settlementKey);
-      const won = contractWon(trade.contractType, trade.entryPrice, exitTick.quote, exitTick, trade.barrier);
-      const payout = won ? trade.quotedPayout : 0;
       const settleTrade = async () => {
         try {
           const { data, error } = await getSupabaseBrowserClient().rpc('marketpilot_settle_practice_trade', {
@@ -652,29 +700,34 @@ export function MarketPilotDashboard() {
             p_exit_epoch: exitTick.epoch,
           });
           if (error) throw error;
-          const balance = storedNumber(data);
-          if (balance === null || balance < 0) throw new Error('The wallet returned an invalid balance.');
+          const settlement = parseSettlementResult(data);
+          if (!settlement || settlement.balance < 0) {
+            throw new Error('The wallet returned an invalid settlement.');
+          }
           if (authUserIdRef.current === userId) {
             setWalletBalances((current) => current
-              ? { ...current, [trade.accountType]: balance }
+              ? { ...current, [trade.accountType]: settlement.balance }
               : current);
             setTrades((current) => current.map((item) => item.id === trade.id ? {
               ...item,
               elapsed: trade.duration,
-              status: won ? 'Won' : 'Lost',
+              status: settlement.status === 'won' ? 'Won' : 'Lost',
+              outcomeSource: settlement.outcomeSource,
+              testWinProbability: settlement.testWinProbability,
               exitPrice: exitTick.quote,
               exitPipSize: exitTick.pipSize,
               exitDigit: getLastDigit(exitTick),
               exitEpoch: exitTick.epoch,
-              payout,
-              profit: payout - trade.stake,
+              payout: settlement.payout,
+              profit: settlement.profit,
             } : item));
             if (trade.contractType.startsWith('DIGIT')) {
               showDigitExitHighlight({
                 tradeId: trade.id,
                 symbol: trade.symbol,
                 digit: getLastDigit(exitTick),
-                outcome: won ? 'win' : 'loss',
+                outcome: settlement.status === 'won' ? 'win' : 'loss',
+                outcomeSource: settlement.outcomeSource,
               });
             }
             setTradeActionError('');
@@ -815,6 +868,8 @@ export function MarketPilotDashboard() {
         entrySerial: market.tickSerial,
         elapsed: 0,
         status: 'Open' as const,
+        outcomeSource: 'test_simulation' as const,
+        testWinProbability: null,
       }, ...previous].slice(0, 100));
     } catch (error) {
       if (authUserIdRef.current === userId) {
@@ -1364,7 +1419,7 @@ export function MarketPilotDashboard() {
                   role="img"
                   aria-label={activeDigit === null
                     ? 'Digit distribution from zero to nine. Waiting for market data.'
-                    : `Digit distribution from zero to nine. Active last digit: ${activeDigit}.${activeDigitTrade ? ' An open digit demo trade highlights the live digit in blue.' : selectedDigitExitHighlight ? ` The ${selectedDigitExitHighlight.outcome} trade exit digit ${selectedDigitExitHighlight.digit} is highlighted temporarily.` : ''}`}
+                    : `Digit distribution from zero to nine. Active last digit: ${activeDigit}.${activeDigitTrade ? ' An open practice trade highlights the live digit in blue.' : digitExitDescription}`}
                 >
                   <div className="digit-distribution-track">
                     {Array.from({ length: 10 }, (_, value) => {
@@ -1419,6 +1474,10 @@ export function MarketPilotDashboard() {
                 </div>
                 <span className="practice-icon"><Activity size={17} /></span>
               </div>
+              <p className="test-simulation-notice">
+                Test-odds practice only: outcomes may be synthetic, but displayed market exits remain actual market data.
+                Synthetic results are marked in trade history. Real-account trading is disabled.
+              </p>
 
               <div className="form-field">
                 <label>Contract type</label>
@@ -1520,15 +1579,23 @@ function TradeRow({ trade, currency }: { trade: PracticeTrade; currency: string 
       </div>
       <div className="trade-result">
         {isOpen ? (
-          <><span className="trade-status open"><i /> Open · {trade.elapsed}/{trade.duration}</span><small>Demo trade</small></>
+          <>
+            <span className="trade-status open"><i /> Open · {trade.elapsed}/{trade.duration}</span>
+            <small>{trade.outcomeSource === 'test_simulation' ? 'Test simulation · market exit unchanged' : 'Market-based practice trade'}</small>
+          </>
         ) : (
           <>
             <span className={`trade-status ${trade.status.toLowerCase()}`}>{trade.status === 'Won' ? 'Won' : 'Lost'}</span>
             <strong className={(trade.profit ?? 0) > 0 ? 'positive' : (trade.profit ?? 0) < 0 ? 'negative' : ''}>
               {(trade.profit ?? 0) > 0 ? '+' : ''}{(trade.profit ?? 0).toFixed(2)} {currency}
             </strong>
+            {trade.outcomeSource === 'test_simulation' && (
+              <small className="test-outcome-note">
+                Synthetic result · {trade.testWinProbability ?? '—'}% test chance
+              </small>
+            )}
             <small>
-              Exit {trade.exitPrice?.toFixed(exitPrecision) ?? '—'} · digit {trade.exitDigit ?? '—'} · {trade.exitEpoch ? `${localTime(trade.exitEpoch)} UTC` : ''}
+              Actual exit {trade.exitPrice?.toFixed(exitPrecision) ?? '—'} · digit {trade.exitDigit ?? '—'} · {trade.exitEpoch ? `${localTime(trade.exitEpoch)} UTC` : ''}
             </small>
           </>
         )}
