@@ -1,5 +1,6 @@
 import { redirect } from 'next/navigation';
 import { connection } from 'next/server';
+import { isAuthSessionMissingError } from '@supabase/supabase-js';
 import { MarketPilotDashboard } from '@/components/dashboard';
 import { createSupabaseServerClient } from '@/lib/supabase/server';
 
@@ -9,7 +10,9 @@ export default async function HomePage() {
   if (process.env.SUPABASE_URL?.trim() && process.env.SUPABASE_PUBLISHABLE_KEY?.trim()) {
     const supabase = await createSupabaseServerClient();
     const { data: { user }, error: userError } = await supabase.auth.getUser();
-    if (userError) throw new Error(`Could not verify the current user: ${userError.message}`);
+    if (userError && !isAuthSessionMissingError(userError)) {
+      throw new Error(`Could not verify the current user: ${userError.message}`);
+    }
 
     if (user) {
       const { data: isAdmin, error: roleError } = await supabase.rpc('marketpilot_is_admin');
