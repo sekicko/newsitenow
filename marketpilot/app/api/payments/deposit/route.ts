@@ -1,4 +1,5 @@
 import { NextResponse, type NextRequest } from 'next/server';
+import { parsePhoneNumberFromString } from 'libphonenumber-js';
 import { assertMegaPayConfigured, initiateMegaPayStk, MegaPayRejectedError } from '@/lib/megapay';
 import { getSupabaseAdminClient } from '@/lib/supabase/admin';
 import { createSupabaseServerClient } from '@/lib/supabase/server';
@@ -20,8 +21,13 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Enter a valid deposit amount.' }, { status: 400 });
   }
   const amountUsd = isRecord(body) ? body.amountUsd : null;
-  if (typeof amountUsd !== 'number' || !Number.isFinite(amountUsd) || amountUsd < 1) {
-    return NextResponse.json({ error: 'Deposit amount must be at least $1.00.' }, { status: 400 });
+  if (typeof amountUsd !== 'number' || !Number.isFinite(amountUsd) || amountUsd < 1 || amountUsd > 500) {
+    return NextResponse.json({ error: 'Deposit amount must be between $1.00 and $500.00.' }, { status: 400 });
+  }
+  const phoneInput = isRecord(body) ? body.phone : null;
+  const phone = typeof phoneInput === 'string' ? parsePhoneNumberFromString(phoneInput.trim()) : undefined;
+  if (!phone?.isValid()) {
+    return NextResponse.json({ error: 'Enter a valid phone number in international format, including its +country code.' }, { status: 400 });
   }
 
   try {
@@ -40,6 +46,7 @@ export async function POST(request: NextRequest) {
 
   const { data: depositData, error: createError } = await supabase.rpc('marketpilot_create_deposit', {
     p_amount_usd: amountUsd,
+    p_phone_e164: phone.number,
   });
   if (createError) {
     return NextResponse.json({ error: createError.message }, { status: 400 });
