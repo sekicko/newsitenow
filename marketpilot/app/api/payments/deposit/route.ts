@@ -32,9 +32,9 @@ export async function POST(request: NextRequest) {
 
   try {
     assertMegaPayConfigured();
-  } catch (error) {
+  } catch {
     return NextResponse.json({
-      error: error instanceof Error ? error.message : 'MegaPay is not configured on the server.',
+      error: 'Deposits are temporarily unavailable. Please try again later.',
     }, { status: 503 });
   }
 
@@ -49,7 +49,8 @@ export async function POST(request: NextRequest) {
     p_phone_e164: phone.number,
   });
   if (createError) {
-    return NextResponse.json({ error: createError.message }, { status: 400 });
+    console.error('Deposit record could not be created.', createError.message);
+    return NextResponse.json({ error: 'The deposit could not be started. Please try again.' }, { status: 400 });
   }
   if (
     !isRecord(depositData) ||
@@ -76,9 +77,10 @@ export async function POST(request: NextRequest) {
     if (attachError) {
       console.error('MegaPay request could not be attached to its pending deposit.', attachError.message);
       return NextResponse.json({
-        error: 'M-Pesa was prompted, but the request could not be linked to your deposit. Please contact support before retrying.',
+        status: 'pending',
+        message: 'Your payment is awaiting confirmation. Check the transaction status before trying again.',
         transactionId: depositData.id,
-      }, { status: 502 });
+      }, { status: 202 });
     }
 
     return NextResponse.json({
@@ -90,38 +92,39 @@ export async function POST(request: NextRequest) {
     });
   } catch (error) {
     if (error instanceof MegaPayRejectedError) {
-      try {
-        const admin = getSupabaseAdminClient();
-        const { error: declineError } = await admin.rpc('marketpilot_payment_mark_deposit_declined', {
-          p_transaction_id: depositData.id,
-          p_reason: error.message,
-        });
-        if (declineError) {
-          console.error('Rejected MegaPay request could not be recorded.', declineError.message);
-          return NextResponse.json({
-            error: 'MegaPay rejected the request, but the transaction status could not be saved. Please contact support.',
-            transactionId: depositData.id,
-          }, { status: 502 });
+      console.error('Deposit initiation needs confirmation.', error.message);
+      if (error.requestId) {
+        try {
+          const admin = getSupabaseAdminClient();
+          const { error: attachError } = await admin.rpc('marketpilot_payment_attach_request', {
+            p_transaction_id: depositData.id,
+            p_request_id: error.requestId,
+          });
+          if (attachError) {
+            console.error('Pending deposit request could not be linked.', attachError.message);
+          }
+        } catch (attachError) {
+          console.error('Pending deposit request could not be linked.', attachError);
         }
-      } catch (declineError) {
-        console.error('Rejected MegaPay request could not be recorded.', declineError);
-        return NextResponse.json({
-          error: 'MegaPay rejected the request, but the transaction status could not be saved. Please contact support.',
-          transactionId: depositData.id,
-        }, { status: 502 });
       }
       return NextResponse.json({
-        error: error.message,
+        status: 'pending',
+        message: 'Your payment is awaiting confirmation. Check the transaction status before trying again.',
         transactionId: depositData.id,
-      }, { status: 422 });
+        amountUsd: depositData.amountUsd,
+        amountKes: depositData.amountKes,
+        kesPerUsd: depositData.kesPerUsd,
+      }, { status: 202 });
     }
 
     console.error('MegaPay STK Push initiation failed.', error);
     return NextResponse.json({
-      error: error instanceof Error
-        ? `MegaPay could not confirm the STK request: ${error.message}`
-        : 'MegaPay could not confirm the STK request.',
+      status: 'pending',
+      message: 'Your payment is awaiting confirmation. Check the transaction status before trying again.',
       transactionId: depositData.id,
-    }, { status: 502 });
+      amountUsd: depositData.amountUsd,
+      amountKes: depositData.amountKes,
+      kesPerUsd: depositData.kesPerUsd,
+    }, { status: 202 });
   }
 }

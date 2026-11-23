@@ -355,6 +355,7 @@ export function MarketPilotDashboard() {
   const [cashierTransactions, setCashierTransactions] = useState<CashierTransaction[]>([]);
   const [cashierTransactionsOwner, setCashierTransactionsOwner] = useState<string | null>(null);
   const [cashierTransactionsLoading, setCashierTransactionsLoading] = useState(false);
+  const [cashierDepositSuccess, setCashierDepositSuccess] = useState<{ transactionId: string; amount: number } | null>(null);
   const [cashierKesPerUsd, setCashierKesPerUsd] = useState<number | null>(null);
   const [cashierPaymentMode, setCashierPaymentMode] = useState<'deposit' | 'withdrawal' | null>(null);
   const [cashierPaymentAmount, setCashierPaymentAmount] = useState('10');
@@ -407,6 +408,10 @@ export function MarketPilotDashboard() {
   const mobileMenuButtonRef = useRef<HTMLButtonElement>(null);
   const mobileMenuCloseRef = useRef<HTMLButtonElement>(null);
   const onAuthUserChange = useCallback((user: User | null) => setAuthUser(user), []);
+
+  useEffect(() => {
+    setCashierDepositSuccess(null);
+  }, [authUser?.id]);
 
   const selectedMarket = market.symbols.find((item) => item.symbol === market.selectedSymbol);
   const latestLiveTick = [...market.liveTicks].reverse().find((tick) => tick.symbol === market.selectedSymbol) ?? null;
@@ -632,6 +637,7 @@ export function MarketPilotDashboard() {
         setCashierTransactions([]);
         setCashierTransactionsOwner(null);
         setCashierKesPerUsd(null);
+        setCashierDepositSuccess(null);
       }
       setCashierTransactionsLoading(false);
       return;
@@ -773,7 +779,10 @@ export function MarketPilotDashboard() {
             if (balance !== null && authUserIdRef.current === userId) {
               setWalletBalances((current) => current ? { ...current, real: balance } : current);
             }
-            setCashierMessage('Deposit completed and added to your Real balance.');
+            const amount = storedNumber(resultRecord.amountUsd);
+            if (amount !== null && amount > 0) {
+              setCashierDepositSuccess({ transactionId, amount });
+            }
           }
         } catch {
           // A later poll can recover from temporary network failures.
@@ -1152,7 +1161,7 @@ export function MarketPilotDashboard() {
       return;
     }
     if (cashierPaymentMode === 'deposit' && !cashierPaymentPhone.trim()) {
-      setCashierError('Enter the phone number for the M-Pesa prompt.');
+      setCashierError('Enter the phone number for the payment prompt.');
       return;
     }
 
@@ -1175,15 +1184,33 @@ export function MarketPilotDashboard() {
         throw new Error('The payment service returned an invalid response.');
       }
       const resultRecord = result as Record<string, unknown>;
-      if (!response.ok) {
+      const transactionId = resultRecord.transactionId;
+      const pendingDeposit = mode === 'deposit' &&
+        typeof transactionId === 'string' &&
+        resultRecord.status === 'pending';
+      if (!response.ok && !pendingDeposit) {
         throw new Error(typeof resultRecord.error === 'string'
           ? resultRecord.error
           : 'The payment request could not be completed.');
       }
 
-      const transactionId = resultRecord.transactionId;
       if (typeof transactionId !== 'string') {
         throw new Error('The payment service did not return a transaction reference.');
+      }
+
+      if (mode === 'deposit' && resultRecord.status === 'pending') {
+        const pendingAmount = storedNumber(resultRecord.amountUsd) ?? amountUsd;
+        setCashierTransactions((current) => current.some((transaction) => transaction.id === transactionId)
+          ? current
+          : [...current, {
+            id: transactionId,
+            accountType: 'real',
+            type: 'deposit',
+            status: 'pending',
+            amount: pendingAmount,
+            createdAt: new Date().toISOString(),
+          }]);
+        setCashierTransactionsOwner(userId);
       }
 
       const rate = storedNumber(resultRecord.kesPerUsd);
@@ -1195,7 +1222,7 @@ export function MarketPilotDashboard() {
 
       setCashierPaymentMode(null);
       setCashierMessage(mode === 'deposit'
-        ? 'M-Pesa prompt sent to your registered phone. Approve it to complete your deposit.'
+        ? 'Deposit pending. We’ll update your transaction history once it is confirmed.'
         : 'Withdrawal requested. The amount is reserved while an administrator processes it.');
       try {
         const transactions = await loadCashierTransactions(userId);
@@ -1686,6 +1713,7 @@ export function MarketPilotDashboard() {
                       onClick={() => {
                         setCashierError('');
                         setCashierMessage('');
+                        setCashierDepositSuccess(null);
                         setCashierPaymentMode('deposit');
                       }}
                       disabled={!authUser || cashierPaymentBusy}
@@ -1709,6 +1737,31 @@ export function MarketPilotDashboard() {
               </div>
             </article>
           </div>
+          {!cashierWalletIsDemo && (
+            <div className="cashier-deposit-notices" aria-live="polite">
+              {visibleCashierTransactions
+                .filter((transaction) => transaction.type === 'deposit' && transaction.status === 'pending')
+                .map((transaction) => (
+                  <article className="cashier-deposit-notice is-pending" key={transaction.id}>
+                    <span className="cashier-deposit-spinner" aria-hidden="true" />
+                    <div>
+                      <strong>Pending deposit!</strong>
+                      <p>Waiting for confirmation of {formatMoney(transaction.amount)}. Your balance will update when confirmed.</p>
+                    </div>
+                  </article>
+                ))}
+              {cashierDepositSuccess && (
+                <article className="cashier-deposit-notice is-success" key={cashierDepositSuccess.transactionId}>
+                  <div className="cashier-deposit-success-mark" aria-hidden="true">✓</div>
+                  <div>
+                    <strong>Success</strong>
+                    <p>Funds added to your real trading wallet</p>
+                    <b>{formatMoney(cashierDepositSuccess.amount)} USD credited</b>
+                  </div>
+                </article>
+              )}
+            </div>
+          )}
           {cashierWalletIsDemo && (
             <aside className="cashier-info-card">
               <span className="cashier-info-icon"><Wallet size={19} aria-hidden="true" /></span>
@@ -1796,7 +1849,7 @@ export function MarketPilotDashboard() {
                 </p>
                 <p className="cashier-payment-note">
                   {cashierPaymentMode === 'deposit'
-                    ? 'An M-Pesa prompt will be sent to the phone number entered above. Your USD balance is credited after MegaPay confirms payment.'
+                    ? 'A payment prompt will be sent to the phone number entered above. Your USD balance is credited after payment confirmation.'
                     : 'The USD amount is reserved immediately. An administrator will send the KES amount to your registered M-Pesa number.'}
                 </p>
                 <div className="cashier-payment-actions">
