@@ -19,10 +19,6 @@ export type PracticeTrade = {
   entrySerial: number;
   elapsed: number;
   status: 'Open' | 'Won' | 'Lost';
-  outcomeSource: 'market_data' | 'test_simulation';
-  testWinProbability?: number | null;
-  simulatedExitDigit?: number | null;
-  simulatedExitPrice?: number | null;
   exitPrice?: number;
   exitPipSize?: number;
   exitDigit?: number;
@@ -30,6 +26,42 @@ export type PracticeTrade = {
   payout?: number;
   profit?: number;
 };
+
+const DIGIT_OVER_UNDER_PROFIT_AT_ONE_USD: Record<number, number> = {
+  1: 0.22,
+  2: 0.38,
+  3: 0.61,
+  4: 0.91,
+  5: 1.32,
+  6: 2.11,
+  7: 3.36,
+  8: 7.21,
+};
+
+export function getFixedContractPayout(
+  contractType: string,
+  barrier: number | null,
+  stake: number,
+): number | null {
+  if (contractType === 'DIGITEVEN' || contractType === 'DIGITODD' || contractType === 'CALL' || contractType === 'PUT') {
+    const roundedProfit = Number((stake * 0.933).toFixed(2));
+    return Number((stake + roundedProfit).toFixed(2));
+  }
+
+  if (!Number.isInteger(barrier) || barrier === null) return null;
+
+  const profitBarrier = contractType === 'DIGITOVER'
+    ? barrier
+    : contractType === 'DIGITUNDER'
+      ? 9 - barrier
+      : null;
+
+  if (profitBarrier === null) return null;
+  const profitAtOneUsd = DIGIT_OVER_UNDER_PROFIT_AT_ONE_USD[profitBarrier];
+  if (profitAtOneUsd === undefined) return null;
+
+  return Number((stake * (1 + profitAtOneUsd)).toFixed(2));
+}
 
 export function contractWon(
   contractType: string,

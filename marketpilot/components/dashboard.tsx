@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import {
   Activity,
   BarChart3,
@@ -11,6 +11,7 @@ import {
   Menu,
   Moon,
   RotateCcw,
+  Settings,
   Sun,
   Wifi,
   WifiOff,
@@ -19,10 +20,12 @@ import {
 } from 'lucide-react';
 import { AuthControls } from '@/components/auth/auth-controls';
 import { PriceChart } from '@/components/price-chart';
+import { AccountSettings } from '@/components/settings/account-settings';
 import { useMarketData } from '@/hooks/use-market-data';
 import {
   CONTRACT_LABELS,
   CONTRACT_TYPES,
+  VOLATILITY_SYMBOLS,
   getLastDigit,
   parseContractDuration,
   precisionFromPip,
@@ -30,7 +33,7 @@ import {
   type MarketTick,
   type PracticeKind,
 } from '@/lib/deriv-client';
-import { type PracticeTrade } from '@/lib/practice';
+import { getFixedContractPayout, type PracticeTrade } from '@/lib/practice';
 import { getSupabaseBrowserClient } from '@/lib/supabase/browser';
 import type { User } from '@supabase/supabase-js';
 import type { WalletAccount, WalletBalances } from '@/lib/wallets';
@@ -42,11 +45,12 @@ const kindLabels: Record<PracticeKind, string> = {
   'rise-fall': 'Rise / Fall',
 };
 
-type DashboardPage = 'hub' | 'cashier' | 'history';
+type DashboardPage = 'hub' | 'cashier' | 'history' | 'settings';
 const sidebarItems = [
   { page: 'hub', label: 'Traders Hub', icon: Activity },
   { page: 'cashier', label: 'Cashier', icon: Wallet },
   { page: 'history', label: 'Trade History', icon: History },
+  { page: 'settings', label: 'Settings', icon: Settings },
 ] as const satisfies readonly { page: DashboardPage; label: string; icon: typeof Activity }[];
 
 const contractDefaults: Record<PracticeKind, string> = {
@@ -64,12 +68,50 @@ type DigitExitHighlight = {
   symbol: string;
   digit: number;
   outcome: 'win' | 'loss';
-  outcomeSource: 'market_data' | 'test_simulation';
+};
+
+type CashierTransaction = {
+  id: string;
+  accountType: WalletAccount;
+  type: 'deposit' | 'withdrawal';
+  status: 'completed' | 'pending' | 'declined';
+  amount: number;
+  createdAt: string;
 };
 
 function storedNumber(value: unknown): number | null {
   const parsed = typeof value === 'number' || typeof value === 'string' ? Number(value) : NaN;
   return Number.isFinite(parsed) ? parsed : null;
+}
+
+async function loadCashierTransactions(userId: string): Promise<CashierTransaction[]> {
+  const { data, error } = await getSupabaseBrowserClient()
+    .from('marketpilot_transactions')
+    .select('id,transaction_type,status,amount_usd,created_at')
+    .eq('user_id', userId)
+    .eq('account_type', 'real')
+    .order('created_at', { ascending: false })
+    .limit(100);
+  if (error) throw error;
+
+  return (data ?? []).flatMap((row) => {
+    const amount = storedNumber(row.amount_usd);
+    if (
+      typeof row.id !== 'string' ||
+      (row.transaction_type !== 'deposit' && row.transaction_type !== 'withdrawal') ||
+      (row.status !== 'completed' && row.status !== 'pending' && row.status !== 'declined') ||
+      amount === null ||
+      typeof row.created_at !== 'string'
+    ) return [];
+    return [{
+      id: row.id,
+      accountType: 'real',
+      type: row.transaction_type,
+      status: row.status,
+      amount,
+      createdAt: row.created_at,
+    }];
+  });
 }
 
 function parseStoredTrade(value: unknown, entrySerial: number): PracticeTrade | null {
@@ -93,7 +135,6 @@ function parseStoredTrade(value: unknown, entrySerial: number): PracticeTrade | 
   const entryEpoch = storedNumber(row.entry_epoch);
   const elapsed = storedNumber(row.elapsed);
   const outcomeSource = row.outcome_source ?? 'market_data';
-  const testWinProbability = row.test_win_probability == null ? null : storedNumber(row.test_win_probability);
   if (
     duration === null ||
     stake === null ||
@@ -103,15 +144,11 @@ function parseStoredTrade(value: unknown, entrySerial: number): PracticeTrade | 
     entryDigit === null ||
     entryEpoch === null ||
     elapsed === null ||
-    (outcomeSource !== 'market_data' && outcomeSource !== 'test_simulation') ||
-    (row.test_win_probability != null &&
-      (testWinProbability === null || testWinProbability < 0 || testWinProbability > 100)) ||
+    outcomeSource !== 'market_data' ||
     typeof row.duration_unit !== 'string'
   ) return null;
 
   const barrier = row.barrier === null ? null : storedNumber(row.barrier);
-  const simulatedExitPrice = row.simulated_exit_price == null ? null : storedNumber(row.simulated_exit_price);
-  const simulatedExitDigit = row.simulated_exit_digit == null ? null : storedNumber(row.simulated_exit_digit);
   const exitPrice = row.exit_price === null ? null : storedNumber(row.exit_price);
   const exitPipSize = row.exit_pip_size === null ? null : storedNumber(row.exit_pip_size);
   const exitDigit = row.exit_digit === null ? null : storedNumber(row.exit_digit);
@@ -120,9 +157,6 @@ function parseStoredTrade(value: unknown, entrySerial: number): PracticeTrade | 
   const profit = row.profit === null ? null : storedNumber(row.profit);
   if (
     (row.barrier !== null && barrier === null) ||
-    (row.simulated_exit_price != null && simulatedExitPrice === null) ||
-    (row.simulated_exit_digit != null &&
-      (simulatedExitDigit === null || !Number.isInteger(simulatedExitDigit) || simulatedExitDigit < 0 || simulatedExitDigit > 9)) ||
     (row.exit_price !== null && exitPrice === null) ||
     (row.exit_pip_size !== null && exitPipSize === null) ||
     (row.exit_digit !== null && exitDigit === null) ||
@@ -150,10 +184,6 @@ function parseStoredTrade(value: unknown, entrySerial: number): PracticeTrade | 
     entrySerial,
     elapsed: Math.min(elapsed, duration),
     status: row.status === 'open' ? 'Open' : row.status === 'won' ? 'Won' : 'Lost',
-    outcomeSource,
-    testWinProbability,
-    ...(simulatedExitPrice === null ? {} : { simulatedExitPrice }),
-    ...(simulatedExitDigit === null ? {} : { simulatedExitDigit }),
     ...(exitPrice === null ? {} : { exitPrice }),
     ...(exitPipSize === null ? {} : { exitPipSize }),
     ...(exitDigit === null ? {} : { exitDigit }),
@@ -176,10 +206,6 @@ type SettlementResult = {
   status: 'won' | 'lost';
   payout: number;
   profit: number;
-  outcomeSource: 'market_data' | 'test_simulation';
-  testWinProbability: number | null;
-  simulatedExitPrice: number | null;
-  simulatedExitDigit: number | null;
 };
 
 function parseSettlementResult(value: unknown): SettlementResult | null {
@@ -188,32 +214,18 @@ function parseSettlementResult(value: unknown): SettlementResult | null {
   const balance = storedNumber(row.balance);
   const payout = storedNumber(row.payout);
   const profit = storedNumber(row.profit);
-  const simulatedExitPrice = row.simulatedExitPrice == null ? null : storedNumber(row.simulatedExitPrice);
-  const simulatedExitDigit = row.simulatedExitDigit == null ? null : storedNumber(row.simulatedExitDigit);
-  const testWinProbability = row.testWinProbability === null
-    ? null
-    : storedNumber(row.testWinProbability);
   if (
     balance === null ||
     payout === null ||
     profit === null ||
-    (row.simulatedExitPrice != null && simulatedExitPrice === null) ||
-    (row.simulatedExitDigit != null &&
-      (simulatedExitDigit === null || !Number.isInteger(simulatedExitDigit) || simulatedExitDigit < 0 || simulatedExitDigit > 9)) ||
     (row.status !== 'won' && row.status !== 'lost') ||
-    (row.outcomeSource !== 'market_data' && row.outcomeSource !== 'test_simulation') ||
-    (row.testWinProbability !== null && row.testWinProbability !== undefined &&
-      (testWinProbability === null || testWinProbability < 0 || testWinProbability > 100))
+    row.outcomeSource !== 'market_data'
   ) return null;
   return {
     balance,
     status: row.status,
     payout,
     profit,
-    outcomeSource: row.outcomeSource,
-    testWinProbability,
-    simulatedExitPrice,
-    simulatedExitDigit,
   };
 }
 
@@ -236,22 +248,6 @@ function parsePersistedSettlement(value: unknown, balance: number, entrySerial: 
     status: trade.status === 'Won' ? 'won' : 'lost',
     payout: trade.payout,
     profit: trade.profit,
-    outcomeSource: trade.outcomeSource,
-    testWinProbability: trade.testWinProbability ?? null,
-    simulatedExitPrice: trade.simulatedExitPrice ?? null,
-    simulatedExitDigit: trade.simulatedExitDigit ?? null,
-  };
-}
-
-function displayDuration(contract: AvailableContract | undefined) {
-  const min = contract ? parseContractDuration(contract.min_contract_duration) : null;
-  const max = contract ? parseContractDuration(contract.max_contract_duration) : null;
-  return {
-    min: min?.amount ?? 1,
-    max: max?.amount ?? 10,
-    unit: min?.unit ?? 't',
-    minText: contract?.min_contract_duration ?? '—',
-    maxText: contract?.max_contract_duration ?? '—',
   };
 }
 
@@ -338,9 +334,9 @@ export function MarketPilotDashboard() {
   const [theme, setTheme] = useState<'dark' | 'light'>('dark');
   const [kind, setKind] = useState<PracticeKind>('over-under');
   const [contractType, setContractType] = useState(contractDefaults['over-under']);
-  const [digit, setDigit] = useState(3);
-  const [duration, setDuration] = useState(5);
-  const [stake, setStake] = useState(1);
+  const [digit, setDigit] = useState('3');
+  const [duration, setDuration] = useState('5');
+  const [stake, setStake] = useState('1');
   const [quote, setQuote] = useState<PracticeQuote | null>(null);
   const [quoteLoading, setQuoteLoading] = useState(false);
   const [quoteError, setQuoteError] = useState('');
@@ -356,6 +352,14 @@ export function MarketPilotDashboard() {
   const [cashierError, setCashierError] = useState('');
   const [cashierMessage, setCashierMessage] = useState('');
   const [cashierResetting, setCashierResetting] = useState(false);
+  const [cashierTransactions, setCashierTransactions] = useState<CashierTransaction[]>([]);
+  const [cashierTransactionsOwner, setCashierTransactionsOwner] = useState<string | null>(null);
+  const [cashierTransactionsLoading, setCashierTransactionsLoading] = useState(false);
+  const [cashierKesPerUsd, setCashierKesPerUsd] = useState<number | null>(null);
+  const [cashierPaymentMode, setCashierPaymentMode] = useState<'deposit' | 'withdrawal' | null>(null);
+  const [cashierPaymentAmount, setCashierPaymentAmount] = useState('10');
+  const [cashierPaymentBusy, setCashierPaymentBusy] = useState(false);
+  const [cashierMarketTrends, setCashierMarketTrends] = useState<Record<string, number[]>>({});
   const [sidebarError, setSidebarError] = useState('');
   const [signingOut, setSigningOut] = useState(false);
   const [openingTrade, setOpeningTrade] = useState(false);
@@ -368,12 +372,21 @@ export function MarketPilotDashboard() {
   const tradeCounter = useRef(0);
   const openingTradeRef = useRef(false);
   const settlingTradeIdsRef = useRef(new Set<string>());
+  const cashierStatusChecksRef = useRef(new Set<string>());
   const digitExitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const clearDigitExitHighlight = useCallback(() => {
     if (digitExitTimerRef.current !== null) clearTimeout(digitExitTimerRef.current);
     digitExitTimerRef.current = null;
     setDigitExitHighlight(null);
   }, []);
+  const changeActiveWallet = useCallback((wallet: WalletAccount) => {
+    setActiveWallet(wallet);
+    setTradeActionError('');
+    setCashierError('');
+    setCashierMessage('');
+    setActiveTradeView('all');
+    clearDigitExitHighlight();
+  }, [clearDigitExitHighlight]);
   const showDigitExitHighlight = useCallback((highlight: DigitExitHighlight) => {
     if (digitExitTimerRef.current !== null) clearTimeout(digitExitTimerRef.current);
     setDigitExitHighlight(highlight);
@@ -414,15 +427,29 @@ export function MarketPilotDashboard() {
     ? contractType
     : availableChoices[0] ?? contractType;
   const contractInfo = tickContracts.find((contract) => contract.contract_type === selectedContractType);
-  const durationLimits = displayDuration(contractInfo);
-  const safeDuration = Math.max(durationLimits.min, Math.min(Math.round(duration), durationLimits.max));
+  const durationLimits = kind === 'rise-fall'
+    ? { min: 10, max: 30, unit: 't' }
+    : { min: 1, max: 15, unit: 't' };
+  const digitValue = Number(digit);
+  const digitIsValid = digit.trim() !== '' && Number.isInteger(digitValue) && digitValue >= 0 && digitValue <= 9;
+  const digitError = digit.trim() === '' || digitIsValid
+    ? ''
+    : 'Digit must be between 0 and 9.';
+  const durationValue = Number(duration);
+  const durationError = duration.trim() === ''
+    ? ''
+    : !Number.isInteger(durationValue)
+      ? 'Duration must be a whole number of ticks.'
+      : durationValue < durationLimits.min || durationValue > durationLimits.max
+        ? `Duration for ${kindLabels[kind]} must be between ${durationLimits.min} and ${durationLimits.max} ticks.`
+        : '';
+  const durationIsValid = duration.trim() !== '' && durationError === '';
+  const stakeValue = Number(stake);
+  const stakeIsValid = stake.trim() !== '' && Number.isFinite(stakeValue) && stakeValue > 0;
+  const safeDuration = durationIsValid ? durationValue : durationLimits.min;
   const alternativeContractType = contractTypes.find((type) => type !== selectedContractType) ?? null;
-  const alternativeContractInfo = tickContracts.find((contract) => contract.contract_type === alternativeContractType);
-  const alternativeDurationLimits = displayDuration(alternativeContractInfo);
-  const alternativeSafeDuration = Math.max(
-    alternativeDurationLimits.min,
-    Math.min(Math.round(duration), alternativeDurationLimits.max),
-  );
+  const alternativeDurationLimits = durationLimits;
+  const alternativeSafeDuration = safeDuration;
   const marketOpen = !!selectedMarket?.exchangeOpen && !selectedMarket.suspended;
   const activeWalletBalance = walletBalances?.[activeWallet] ?? 0;
   const activeDigit = currentTick ? getLastDigit(currentTick) : null;
@@ -435,9 +462,7 @@ export function MarketPilotDashboard() {
     ? digitExitHighlight
     : null;
   const digitExitDescription = selectedDigitExitHighlight
-    ? selectedDigitExitHighlight.outcomeSource === 'test_simulation'
-      ? ` The synthetic ${selectedDigitExitHighlight.outcome} result digit ${selectedDigitExitHighlight.digit} is highlighted; the actual market exit remains separate.`
-      : ` The ${selectedDigitExitHighlight.outcome} trade exit digit ${selectedDigitExitHighlight.digit} is highlighted temporarily.`
+    ? ` The ${selectedDigitExitHighlight.outcome} trade exit digit ${selectedDigitExitHighlight.digit} is highlighted temporarily.`
     : '';
   const pointerDigit = activeDigitTrade ? activeDigit : selectedDigitExitHighlight?.digit ?? activeDigit;
   const digitPercentages = useMemo(() => {
@@ -455,6 +480,69 @@ export function MarketPilotDashboard() {
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
   }, [theme]);
+
+  useEffect(() => {
+    if (market.connectionState !== 'connected') return;
+    const latestTrends = market.tickEvents.reduce<Record<string, number[]>>((current, { tick }) => {
+      const prices = current[tick.symbol] ?? [];
+      current[tick.symbol] = [...prices, tick.quote].slice(-30);
+      return current;
+    }, {});
+    if (!Object.keys(latestTrends).length) return;
+    setCashierMarketTrends((current) => ({ ...current, ...latestTrends }));
+  }, [market.connectionState, market.tickEvents]);
+
+  useEffect(() => {
+    if (currentPage !== 'cashier' || market.connectionState !== 'connected') return;
+    let cancelled = false;
+    const subscriptionIds = new Map<string, string>();
+
+    void Promise.all(VOLATILITY_SYMBOLS.map(async (symbol) => {
+      try {
+        const response = await market.request({
+          ticks_history: symbol.symbol,
+          count: 30,
+          end: 'latest',
+          style: 'ticks',
+        });
+        const history = response.history as { prices?: unknown } | undefined;
+        if (!Array.isArray(history?.prices)) return [symbol.symbol, [] as number[]] as const;
+        const prices = history.prices.filter((price): price is number => typeof price === 'number').slice(-30);
+        return [symbol.symbol, prices] as const;
+      } catch {
+        return [symbol.symbol, [] as number[]] as const;
+      }
+    })).then((entries) => {
+      if (cancelled) return;
+      setCashierMarketTrends((current) => {
+        const next = { ...current };
+        entries.forEach(([symbol, prices]) => {
+          if (prices.length) next[symbol] = prices;
+        });
+        return next;
+      });
+    });
+
+    VOLATILITY_SYMBOLS.forEach((symbol) => {
+      void market.request({ ticks: symbol.symbol, subscribe: 1 }).then((response) => {
+        const subscription = response.subscription as { id?: unknown } | undefined;
+        if (typeof subscription?.id !== 'string' || cancelled) {
+          if (typeof subscription?.id === 'string') {
+            void market.request({ forget: subscription.id }).catch(() => undefined);
+          }
+          return;
+        }
+        subscriptionIds.set(symbol.symbol, subscription.id);
+      }).catch(() => undefined);
+    });
+
+    return () => {
+      cancelled = true;
+      subscriptionIds.forEach((subscriptionId) => {
+        void market.request({ forget: subscriptionId }).catch(() => undefined);
+      });
+    };
+  }, [currentPage, market.connectionState, market.request]);
 
   useEffect(() => () => {
     if (digitExitTimerRef.current !== null) clearTimeout(digitExitTimerRef.current);
@@ -537,13 +625,120 @@ export function MarketPilotDashboard() {
   }, [authUser?.id, clearDigitExitHighlight]);
 
   useEffect(() => {
+    if (!authUser?.id || currentPage !== 'cashier') {
+      if (!authUser?.id) {
+        setCashierTransactions([]);
+        setCashierTransactionsOwner(null);
+        setCashierKesPerUsd(null);
+      }
+      setCashierTransactionsLoading(false);
+      return;
+    }
+
+    let active = true;
+    setCashierTransactionsLoading(true);
+    const supabase = getSupabaseBrowserClient();
+    void Promise.all([
+      loadCashierTransactions(authUser.id),
+      supabase.rpc('marketpilot_get_kes_per_usd'),
+    ]).then(([transactions, rateResult]) => {
+      if (!active) return;
+      if (rateResult.error) throw rateResult.error;
+      const rate = storedNumber(rateResult.data);
+      setCashierTransactions(transactions);
+      setCashierTransactionsOwner(authUser.id);
+      setCashierKesPerUsd(rate !== null && rate > 0 ? rate : null);
+      setCashierError('');
+    }).catch((error: unknown) => {
+      if (!active) return;
+      setCashierError(error instanceof Error ? error.message : 'Cashier information could not be loaded.');
+    }).finally(() => {
+      if (active) setCashierTransactionsLoading(false);
+    });
+
+    return () => {
+      active = false;
+    };
+  }, [authUser?.id, currentPage]);
+
+  useEffect(() => {
+    if (!authUser?.id || currentPage !== 'cashier') return;
+    const userId = authUser.id;
+    const intervalId = window.setInterval(() => {
+      void loadCashierTransactions(userId).then((transactions) => {
+        if (authUserIdRef.current === userId) {
+          setCashierTransactions(transactions);
+          setCashierTransactionsOwner(userId);
+        }
+      }).catch((error: unknown) => {
+        if (authUserIdRef.current === userId) {
+          setCashierError(error instanceof Error ? error.message : 'Transaction history could not be refreshed.');
+        }
+      });
+    }, 20_000);
+    return () => window.clearInterval(intervalId);
+  }, [authUser?.id, currentPage]);
+
+  const pendingDepositIds = cashierTransactionsOwner === authUser?.id
+    ? cashierTransactions
+      .filter((transaction) => transaction.type === 'deposit' && transaction.status === 'pending')
+      .map((transaction) => transaction.id)
+      .slice(0, 5)
+      .join(',')
+    : '';
+
+  useEffect(() => {
+    if (!authUser?.id || currentPage !== 'cashier' || !pendingDepositIds) return;
+    const userId = authUser.id;
+    const transactionIds = pendingDepositIds.split(',');
+    const checkPendingDeposits = async () => {
+      await Promise.all(transactionIds.map(async (transactionId) => {
+        if (cashierStatusChecksRef.current.has(transactionId)) return;
+        cashierStatusChecksRef.current.add(transactionId);
+        try {
+          const response = await fetch('/api/payments/status', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ transactionId }),
+            cache: 'no-store',
+          });
+          const result: unknown = await response.json();
+          if (
+            !response.ok ||
+            !result ||
+            typeof result !== 'object' ||
+            authUserIdRef.current !== userId
+          ) return;
+          const resultRecord = result as Record<string, unknown>;
+          const status = resultRecord.status;
+          if (status !== 'completed' && status !== 'declined') return;
+          setCashierTransactions((current) => current.map((transaction) =>
+            transaction.id === transactionId ? { ...transaction, status } : transaction,
+          ));
+          if (status === 'completed') {
+            const balance = storedNumber(resultRecord.balance);
+            if (balance !== null && authUserIdRef.current === userId) {
+              setWalletBalances((current) => current ? { ...current, real: balance } : current);
+            }
+            setCashierMessage('Deposit completed and added to your Real balance.');
+          }
+        } catch {
+          // A later poll can recover from temporary network failures.
+        } finally {
+          cashierStatusChecksRef.current.delete(transactionId);
+        }
+      }));
+    };
+
+    void checkPendingDeposits();
+    const intervalId = window.setInterval(() => void checkPendingDeposits(), 12_000);
+    return () => window.clearInterval(intervalId);
+  }, [authUser?.id, currentPage, pendingDepositIds]);
+
+  useEffect(() => {
     if (!availableChoices.length) return;
     if (!availableChoices.includes(contractType)) setContractType(availableChoices[0]);
   }, [availableChoices, contractType]);
-
-  useEffect(() => {
-    setDuration((value) => Math.max(durationLimits.min, Math.min(Math.round(value), durationLimits.max)));
-  }, [durationLimits.min, durationLimits.max]);
 
   useEffect(() => {
     if (
@@ -551,8 +746,9 @@ export function MarketPilotDashboard() {
       !market.selectedSymbol ||
       !marketOpen ||
       !availableChoices.includes(selectedContractType) ||
-      !Number.isFinite(stake) ||
-      stake <= 0
+      !stakeIsValid ||
+      !durationIsValid ||
+      (['DIGITOVER', 'DIGITUNDER', 'DIGITMATCH', 'DIGITDIFF'].includes(selectedContractType) && !digitIsValid)
     ) {
       setQuote(null);
       setQuoteLoading(false);
@@ -567,7 +763,7 @@ export function MarketPilotDashboard() {
     const timer = setTimeout(() => {
       const request: Record<string, unknown> = {
         proposal: 1,
-        amount: stake,
+        amount: stakeValue,
         basis: 'stake',
         contract_type: selectedContractType,
         currency: WALLET_CURRENCY,
@@ -576,7 +772,7 @@ export function MarketPilotDashboard() {
         underlying_symbol: market.selectedSymbol,
       };
       if (['DIGITOVER', 'DIGITUNDER', 'DIGITMATCH', 'DIGITDIFF'].includes(selectedContractType)) {
-        request.barrier = String(digit);
+        request.barrier = String(digitValue);
       }
 
       market.request(request).then((response) => {
@@ -590,9 +786,14 @@ export function MarketPilotDashboard() {
           setQuoteError('Market data did not return a complete price proposal.');
           return;
         }
+        const fixedPayout = getFixedContractPayout(
+          selectedContractType,
+          digitIsValid ? digitValue : null,
+          proposal.ask_price,
+        );
         setQuote({
           askPrice: proposal.ask_price,
-          payout: proposal.payout,
+          payout: fixedPayout ?? proposal.payout,
         });
       }).catch((error: unknown) => {
         if (!cancelled) {
@@ -610,13 +811,18 @@ export function MarketPilotDashboard() {
   }, [
     availableChoices,
     digit,
+    digitIsValid,
     durationLimits.unit,
+    duration,
+    durationIsValid,
     market.connectionState,
     marketOpen,
     market.request,
     market.selectedSymbol,
     safeDuration,
     selectedContractType,
+    stakeIsValid,
+    stakeValue,
     stake,
   ]);
 
@@ -627,8 +833,11 @@ export function MarketPilotDashboard() {
       market.connectionState !== 'connected' ||
       !market.selectedSymbol ||
       !marketOpen ||
-      !Number.isFinite(stake) ||
-      stake <= 0
+      !stakeIsValid ||
+      !durationIsValid ||
+      (alternativeContractType !== null &&
+        ['DIGITOVER', 'DIGITUNDER', 'DIGITMATCH', 'DIGITDIFF'].includes(alternativeContractType) &&
+        !digitIsValid)
     ) {
       setAlternativeQuote(null);
       setAlternativeQuoteLoading(false);
@@ -643,7 +852,7 @@ export function MarketPilotDashboard() {
     const timer = setTimeout(() => {
       const request: Record<string, unknown> = {
         proposal: 1,
-        amount: stake,
+        amount: stakeValue,
         basis: 'stake',
         contract_type: alternativeContractType,
         currency: WALLET_CURRENCY,
@@ -652,7 +861,7 @@ export function MarketPilotDashboard() {
         underlying_symbol: market.selectedSymbol,
       };
       if (['DIGITOVER', 'DIGITUNDER', 'DIGITMATCH', 'DIGITDIFF'].includes(alternativeContractType)) {
-        request.barrier = String(digit);
+        request.barrier = String(digitValue);
       }
 
       market.request(request).then((response) => {
@@ -666,9 +875,14 @@ export function MarketPilotDashboard() {
           setAlternativeQuoteError('Market data did not return a complete price proposal.');
           return;
         }
+        const fixedPayout = getFixedContractPayout(
+          alternativeContractType,
+          digitIsValid ? digitValue : null,
+          proposal.ask_price,
+        );
         setAlternativeQuote({
           askPrice: proposal.ask_price,
-          payout: proposal.payout,
+          payout: fixedPayout ?? proposal.payout,
         });
       }).catch((error: unknown) => {
         if (!cancelled) {
@@ -689,10 +903,15 @@ export function MarketPilotDashboard() {
     alternativeSafeDuration,
     availableChoices,
     digit,
+    digitIsValid,
+    duration,
+    durationIsValid,
     market.connectionState,
     marketOpen,
     market.request,
     market.selectedSymbol,
+    stakeIsValid,
+    stakeValue,
     stake,
   ]);
 
@@ -745,10 +964,31 @@ export function MarketPilotDashboard() {
           if (error) throw new Error(`Supabase could not settle this Demo trade: ${error.message}`);
           let settlement = parseSettlementResult(data);
           if (!settlement) {
-            const balance = storedNumber(data);
+            const result = data && typeof data === 'object' && !Array.isArray(data)
+              ? data as Record<string, unknown>
+              : null;
+            if (
+              result?.outcomeSource === 'test_simulation' &&
+              (result.status === 'won' || result.status === 'lost')
+            ) {
+              const balance = storedNumber(result.balance);
+              if (balance === null || balance < 0) {
+                throw new Error('The database returned an invalid wallet balance for a legacy simulated trade.');
+              }
+              if (authUserIdRef.current === userId) {
+                setWalletBalances((current) => current
+                  ? { ...current, [trade.accountType]: balance }
+                  : current);
+                setTrades((current) => current.filter((item) => item.id !== trade.id));
+                setTradeActionError('');
+              }
+              return;
+            }
+
+            const balance = storedNumber(result?.balance ?? data);
             if (balance === null || balance < 0) {
               throw new Error(
-                'Supabase returned an invalid settlement response. Apply migration 20261122143000_marketpilot_test_outcome_rates.sql and verify that it completed.',
+                'Supabase returned no valid wallet balance for this settlement. Confirm migration 20261123192000_marketpilot_remove_simulated_outcomes.sql was applied to the project configured in this app.',
               );
             }
             const { data: savedTrade, error: readError } = await supabase
@@ -774,10 +1014,6 @@ export function MarketPilotDashboard() {
               ...item,
               elapsed: trade.duration,
               status: settlement.status === 'won' ? 'Won' : 'Lost',
-              outcomeSource: settlement.outcomeSource,
-              testWinProbability: settlement.testWinProbability,
-              simulatedExitPrice: settlement.simulatedExitPrice,
-              simulatedExitDigit: settlement.simulatedExitDigit,
               exitPrice: exitTick.quote,
               exitPipSize: exitTick.pipSize,
               exitDigit: getLastDigit(exitTick),
@@ -785,20 +1021,19 @@ export function MarketPilotDashboard() {
               payout: settlement.payout,
               profit: settlement.profit,
             } : item));
-            if (trade.contractType.startsWith('DIGIT')) {
+            if (trade.accountType === activeWallet && trade.contractType.startsWith('DIGIT')) {
               showDigitExitHighlight({
                 tradeId: trade.id,
                 symbol: trade.symbol,
-                digit: settlement.simulatedExitDigit ?? getLastDigit(exitTick),
+                digit: getLastDigit(exitTick),
                 outcome: settlement.status === 'won' ? 'win' : 'loss',
-                outcomeSource: settlement.outcomeSource,
               });
             }
-            setTradeActionError('');
+            if (trade.accountType === activeWallet) setTradeActionError('');
           }
         } catch (error) {
           console.error('MarketPilot Demo trade settlement failed.', error);
-          if (authUserIdRef.current === userId) {
+          if (authUserIdRef.current === userId && trade.accountType === activeWallet) {
             setTradeActionError(
               error instanceof Error
                 ? error.message
@@ -811,11 +1046,21 @@ export function MarketPilotDashboard() {
       };
       void settleTrade();
     }
-  }, [authUser?.id, market.tickEvents, showDigitExitHighlight, trades]);
+  }, [activeWallet, authUser?.id, market.tickEvents, showDigitExitHighlight, trades]);
 
   const chooseKind = (nextKind: PracticeKind) => {
     setKind(nextKind);
     setContractType(contractDefaults[nextKind]);
+    const minDuration = nextKind === 'rise-fall' ? 10 : 1;
+    const maxDuration = nextKind === 'rise-fall' ? 30 : 15;
+    const currentDuration = Number(duration);
+    if (
+      !Number.isInteger(currentDuration) ||
+      currentDuration < minDuration ||
+      currentDuration > maxDuration
+    ) {
+      setDuration(String(minDuration));
+    }
   };
 
   const resetDemoWallet = async () => {
@@ -839,6 +1084,70 @@ export function MarketPilotDashboard() {
       }
     } finally {
       setCashierResetting(false);
+    }
+  };
+
+  const submitCashierPayment = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!authUser || activeWallet !== 'real' || !cashierPaymentMode || cashierPaymentBusy) return;
+
+    const amountUsd = Number(cashierPaymentAmount);
+    if (!Number.isFinite(amountUsd) || amountUsd < 1) {
+      setCashierError('Enter an amount of at least $1.00.');
+      return;
+    }
+
+    const userId = authUser.id;
+    const mode = cashierPaymentMode;
+    setCashierPaymentBusy(true);
+    setCashierError('');
+    setCashierMessage('');
+    try {
+      const response = await fetch(`/api/payments/${mode}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ amountUsd }),
+      });
+      const result: unknown = await response.json();
+      if (!result || typeof result !== 'object') {
+        throw new Error('The payment service returned an invalid response.');
+      }
+      const resultRecord = result as Record<string, unknown>;
+      if (!response.ok) {
+        throw new Error(typeof resultRecord.error === 'string'
+          ? resultRecord.error
+          : 'The payment request could not be completed.');
+      }
+
+      const transactionId = resultRecord.transactionId;
+      if (typeof transactionId !== 'string') {
+        throw new Error('The payment service did not return a transaction reference.');
+      }
+
+      const rate = storedNumber(resultRecord.kesPerUsd);
+      if (rate !== null && rate > 0) setCashierKesPerUsd(rate);
+      const balance = storedNumber(resultRecord.balance);
+      if (mode === 'withdrawal' && balance !== null && authUserIdRef.current === userId) {
+        setWalletBalances((current) => current ? { ...current, real: balance } : current);
+      }
+
+      setCashierPaymentMode(null);
+      setCashierMessage(mode === 'deposit'
+        ? 'M-Pesa prompt sent to your registered phone. Approve it to complete your deposit.'
+        : 'Withdrawal requested. The amount is reserved while an administrator processes it.');
+      try {
+        const transactions = await loadCashierTransactions(userId);
+        if (authUserIdRef.current === userId) {
+          setCashierTransactions(transactions);
+          setCashierTransactionsOwner(userId);
+        }
+      } catch {
+        setCashierError('The request was accepted, but transaction history could not be refreshed.');
+      }
+    } catch (error) {
+      setCashierError(error instanceof Error ? error.message : 'The payment request could not be completed.');
+    } finally {
+      setCashierPaymentBusy(false);
     }
   };
 
@@ -867,6 +1176,7 @@ export function MarketPilotDashboard() {
 
   const startPractice = async (type = selectedContractType, tradeQuote = quote) => {
     const tradeContract = tickContracts.find((contract) => contract.contract_type === type);
+    const hasDigitBarrier = ['DIGITOVER', 'DIGITUNDER', 'DIGITMATCH', 'DIGITDIFF'].includes(type);
     if (
       !latestLiveTick ||
       !tradeQuote ||
@@ -880,11 +1190,12 @@ export function MarketPilotDashboard() {
       walletError ||
       activeWallet !== 'demo' ||
       tradeQuote.askPrice > activeWalletBalance ||
+      !stakeIsValid ||
+      !durationIsValid ||
+      (hasDigitBarrier && !digitIsValid) ||
       openingTradeRef.current
     ) return;
-    const tradeDurationLimits = displayDuration(tradeContract);
-    const tradeDuration = Math.max(tradeDurationLimits.min, Math.min(Math.round(duration), tradeDurationLimits.max));
-    const hasDigitBarrier = ['DIGITOVER', 'DIGITUNDER', 'DIGITMATCH', 'DIGITDIFF'].includes(type);
+    const tradeDuration = durationValue;
     tradeCounter.current += 1;
     const tradeId = `${Date.now()}-${tradeCounter.current}`;
     const typeLabel = CONTRACT_LABELS[type];
@@ -898,7 +1209,7 @@ export function MarketPilotDashboard() {
         p_account_type: activeWallet,
         p_symbol: selectedMarket.symbol,
         p_contract_type: type,
-        p_barrier: hasDigitBarrier ? digit : null,
+        p_barrier: hasDigitBarrier ? digitValue : null,
         p_duration: tradeDuration,
         p_stake: tradeQuote.askPrice,
         p_quoted_payout: tradeQuote.payout,
@@ -924,10 +1235,10 @@ export function MarketPilotDashboard() {
         accountType: activeWallet,
         symbol: selectedMarket.symbol,
         contractType: type,
-        contractLabel: `${typeLabel}${hasDigitBarrier ? ` ${digit}` : ''}`,
-        barrier: hasDigitBarrier ? digit : null,
+        contractLabel: `${typeLabel}${hasDigitBarrier ? ` ${digitValue}` : ''}`,
+        barrier: hasDigitBarrier ? digitValue : null,
         duration: tradeDuration,
-        durationUnit: tradeDurationLimits.unit,
+        durationUnit: durationLimits.unit,
         stake: tradeQuote.askPrice,
         quotedPayout: tradeQuote.payout,
         entryPrice: latestLiveTick.quote,
@@ -937,8 +1248,6 @@ export function MarketPilotDashboard() {
         entrySerial: market.tickSerial,
         elapsed: 0,
         status: 'Open' as const,
-        outcomeSource: 'test_simulation' as const,
-        testWinProbability: null,
       }, ...previous].slice(0, 100));
     } catch (error) {
       if (authUserIdRef.current === userId) {
@@ -1018,6 +1327,20 @@ export function MarketPilotDashboard() {
   const formatMoney = (amount: number) => `$${Math.abs(amount).toFixed(2)}`;
   const formatBalance = (amount: number) => `$${amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   const formatProfit = (amount: number) => `${amount >= 0 ? '+' : '-'}${formatMoney(amount)}`;
+  const visibleCashierTransactions = cashierTransactionsOwner === authUser?.id
+    ? cashierTransactions.filter((transaction) => transaction.accountType === activeWallet)
+    : [];
+  const cashierWalletIsDemo = activeWallet === 'demo';
+  const cashierWalletLabel = cashierWalletIsDemo ? 'Demo account' : 'Real account';
+  const cashierBalanceText = !authUser
+    ? 'Sign in to view'
+    : walletLoading
+      ? 'Loading balance…'
+      : walletError
+        ? 'Unavailable'
+        : walletBalances
+          ? formatBalance(walletBalances[activeWallet])
+          : 'Unavailable';
   const renderContractActions = (placement: 'inline' | 'floating') => (
     <div
       className={`contract-action-pair contract-action-pair--${placement}`}
@@ -1031,14 +1354,6 @@ export function MarketPilotDashboard() {
           : type === alternativeContractType
             ? alternativeQuote
             : null;
-        const loading = type === selectedContractType
-          ? quoteLoading
-          : type === alternativeContractType && alternativeQuoteLoading;
-        const error = type === selectedContractType
-          ? quoteError
-          : type === alternativeContractType
-            ? alternativeQuoteError
-            : '';
         const positive = ['DIGITOVER', 'DIGITEVEN', 'DIGITMATCH', 'CALL'].includes(type);
         const hasDigitBarrier = ['DIGITOVER', 'DIGITUNDER', 'DIGITMATCH', 'DIGITDIFF'].includes(type);
         const actionLabel = `${CONTRACT_LABELS[type]}${hasDigitBarrier ? ` ${digit}` : ''}`;
@@ -1050,6 +1365,9 @@ export function MarketPilotDashboard() {
           actionQuote.askPrice > walletBalances[activeWallet];
         const disabled = !supported ||
           !actionQuote ||
+          !stakeIsValid ||
+          !durationIsValid ||
+          (hasDigitBarrier && !digitIsValid) ||
           !latestLiveTick ||
           !marketOpen ||
           !authUser ||
@@ -1059,27 +1377,6 @@ export function MarketPilotDashboard() {
           activeWallet !== 'demo' ||
           insufficientBalance ||
           openingTrade;
-        const unavailableText = !supported
-          ? 'Not available for this market'
-          : !marketOpen
-            ? 'Market closed'
-            : !latestLiveTick
-              ? 'Waiting for a live tick'
-              : !authUser
-                ? 'Sign in to use a wallet'
-                : walletLoading
-                  ? 'Loading wallet…'
-                  : walletError
-                    ? 'Wallet unavailable'
-                    : activeWallet === 'real'
-                      ? 'Real wallet is read-only for now'
-                    : insufficientBalance
-                        ? 'Insufficient balance'
-                        : openingTrade
-                          ? 'Opening demo trade…'
-              : loading
-                ? 'Loading proposal…'
-                : error || 'Proposal unavailable';
 
         return (
           <button
@@ -1088,22 +1385,15 @@ export function MarketPilotDashboard() {
             type="button"
             onClick={() => startPractice(type, actionQuote)}
             disabled={disabled}
-            title={disabled ? error || unavailableText : `Start ${actionLabel} demo trade`}
+            title={`Start ${actionLabel} demo trade`}
             aria-label={actionQuote
               ? `${actionLabel}. Payout ${formatMoney(actionQuote.payout)}, including ${formatMoney(actionQuote.askPrice)} stake and ${formatProfit(actionQuote.payout - actionQuote.askPrice)} profit.`
-              : `${actionLabel}. ${unavailableText}.`}
+              : `${actionLabel}.`}
           >
             <span className="contract-action-name">{actionLabel}</span>
             {actionQuote ? (
-              <>
-                <strong className="contract-action-payout">{formatMoney(actionQuote.payout)}</strong>
-                <small>
-                  Payout · {actionDuration} {actionDurationUnit} · {formatMoney(actionQuote.askPrice)} stake · {formatProfit(actionQuote.payout - actionQuote.askPrice)} profit
-                </small>
-              </>
-            ) : (
-              <small>{unavailableText}</small>
-            )}
+              <strong className="contract-action-payout">Payout: {formatMoney(actionQuote.payout)}</strong>
+            ) : null}
           </button>
         );
       })}
@@ -1149,6 +1439,15 @@ export function MarketPilotDashboard() {
           >
             Cashier
           </button>
+          {authUser && (
+            <button
+              type="button"
+              className={`nav-link${currentPage === 'settings' ? ' active' : ''}`}
+              onClick={() => setCurrentPage('settings')}
+            >
+              Settings
+            </button>
+          )}
         </nav>
         {currentPage === 'hub' && (
           <nav className="mobile-contract-nav" aria-label="Choose contract type">
@@ -1175,7 +1474,7 @@ export function MarketPilotDashboard() {
             activeWallet={activeWallet}
             walletLoading={walletLoading}
             walletError={walletError}
-            onWalletChange={setActiveWallet}
+            onWalletChange={changeActiveWallet}
           />
           <div className={`connection-pill ${market.connectionState}`}>
             {market.connectionState === 'connected' ? <Wifi size={14} /> : <WifiOff size={14} />}
@@ -1205,7 +1504,9 @@ export function MarketPilotDashboard() {
               </button>
             </div>
             <nav className="mobile-sidebar-links" aria-label="Main navigation">
-              {sidebarItems.map(({ page, label, icon: Icon }) => (
+              {sidebarItems
+                .filter(({ page }) => page !== 'settings' || !!authUser)
+                .map(({ page, label, icon: Icon }) => (
                 <button
                   key={page}
                   type="button"
@@ -1263,81 +1564,249 @@ export function MarketPilotDashboard() {
         </div>
       )}
 
+      {currentPage === 'settings' && (
+        <div className="account-settings-page">
+          {authUser ? (
+            <AccountSettings user={authUser} />
+          ) : (
+            <section className="account-settings-card" aria-label="Account settings">
+              <p className="eyebrow">YOUR ACCOUNT</p>
+              <h1>Settings</h1>
+              <p>Sign in to manage your account settings.</p>
+            </section>
+          )}
+        </div>
+      )}
+
       {currentPage === 'cashier' && (
         <section className="page-content cashier-page" aria-labelledby="cashier-title">
           <div className="page-heading cashier-heading">
             <div>
               <p className="eyebrow">ACCOUNT MANAGEMENT</p>
-              <h1 id="cashier-title">Cashier</h1>
-              <p className="heading-subtitle">Choose an account to see its available USD balance.</p>
+              <h1 id="cashier-title">My Wallet</h1>
             </div>
-            <span className="cashier-currency">USD · US Dollar</span>
           </div>
           {!authUser && (
-            <p className="cashier-message" role="status">Sign in to view your account balances.</p>
+            <p className="cashier-message" role="status">Sign in to view your account balance.</p>
           )}
           {walletError && <p className="cashier-message cashier-message--error" role="alert">{walletError}</p>}
           {cashierError && <p className="cashier-message cashier-message--error" role="alert">{cashierError}</p>}
           {cashierMessage && <p className="cashier-message cashier-message--success" role="status">{cashierMessage}</p>}
-          <div className="cashier-wallet-grid" role="group" aria-label="Select account">
-            {(['demo', 'real'] as const).map((wallet) => {
-              const isDemo = wallet === 'demo';
-              const walletLabel = isDemo ? 'Demo account' : 'Real account';
-              const balanceText = !authUser
-                ? 'Sign in to view'
-                : walletLoading
-                  ? 'Loading balance…'
-                  : walletError
-                    ? 'Unavailable'
-                    : walletBalances
-                      ? formatBalance(walletBalances[wallet])
-                      : 'Unavailable';
-
-              return (
-                <article
-                  key={wallet}
-                  className={`cashier-wallet-card${activeWallet === wallet ? ' is-active' : ''}${isDemo ? ' cashier-wallet-card--demo' : ' cashier-wallet-card--real'}`}
-                >
+          <div className="cashier-wallet-grid" role="group" aria-label="Active account balance">
+            <article
+              className={`cashier-wallet-card is-active${cashierWalletIsDemo ? ' cashier-wallet-card--demo' : ' cashier-wallet-card--real'}`}
+            >
+              <div className="cashier-wallet-heading">
+                <span className={`cashier-wallet-badge${cashierWalletIsDemo ? ' is-demo' : ' is-real'}`}>
+                  {cashierWalletIsDemo ? 'DEMO' : 'REAL'}
+                </span>
+                <span className="cashier-active-label">ACTIVE</span>
+              </div>
+              <span className="cashier-wallet-title">{cashierWalletLabel}</span>
+              <div className="cashier-wallet-row">
+                <strong className="cashier-wallet-balance">{cashierBalanceText}</strong>
+                {cashierWalletIsDemo && (
                   <button
                     type="button"
-                    className="cashier-wallet-choice"
-                    onClick={() => setActiveWallet(wallet)}
-                    aria-pressed={activeWallet === wallet}
+                    className="cashier-reset-button"
+                    onClick={() => void resetDemoWallet()}
+                    disabled={!authUser || !walletBalances || walletLoading || !!walletError || cashierResetting}
                   >
-                    <span className="cashier-wallet-heading">
-                      <span className={`cashier-wallet-badge${isDemo ? ' is-demo' : ' is-real'}`}>
-                        {isDemo ? 'DEMO' : 'REAL'}
-                      </span>
-                      {activeWallet === wallet && <span className="cashier-active-label">ACTIVE</span>}
-                    </span>
-                    <span className="cashier-wallet-title">{walletLabel}</span>
-                    <strong className="cashier-wallet-balance">{balanceText}</strong>
-                    <span className="cashier-wallet-description">
-                      {isDemo ? 'Demo trading uses virtual funds.' : 'Real-money deposits and trading are not enabled.'}
-                    </span>
+                    <RotateCcw size={15} aria-hidden="true" />
+                    {cashierResetting ? 'Resetting balance…' : 'Reset demo balance'}
                   </button>
-                  {isDemo && (
+                )}
+                {!cashierWalletIsDemo && (
+                  <div className="cashier-real-actions" role="group" aria-label="Real account actions">
                     <button
                       type="button"
-                      className="cashier-reset-button"
-                      onClick={() => void resetDemoWallet()}
-                      disabled={!authUser || !walletBalances || walletLoading || !!walletError || cashierResetting}
+                      className="cashier-action-button"
+                      onClick={() => {
+                        setCashierError('');
+                        setCashierMessage('');
+                        setCashierPaymentMode('deposit');
+                      }}
+                      disabled={!authUser || cashierPaymentBusy}
                     >
-                      <RotateCcw size={15} aria-hidden="true" />
-                      {cashierResetting ? 'Resetting balance…' : 'Reset demo balance'}
+                      Deposit
                     </button>
-                  )}
-                </article>
-              );
-            })}
+                    <button
+                      type="button"
+                      className="cashier-action-button"
+                      onClick={() => {
+                        setCashierError('');
+                        setCashierMessage('');
+                        setCashierPaymentMode('withdrawal');
+                      }}
+                      disabled={!authUser || cashierPaymentBusy}
+                    >
+                      Withdraw
+                    </button>
+                  </div>
+                )}
+              </div>
+            </article>
           </div>
-          <aside className="cashier-info-card">
-            <span className="cashier-info-icon"><Wallet size={19} aria-hidden="true" /></span>
-            <div>
-              <strong>Manage Demo funds</strong>
-              <p>Demo funds are virtual and can be reset to $10,000.00 at any time. Open Demo trades remain active after a reset, and their results can change the balance later. Your real account is read-only; deposits and live trading are not available.</p>
-            </div>
-          </aside>
+          {cashierWalletIsDemo && (
+            <aside className="cashier-info-card">
+              <span className="cashier-info-icon"><Wallet size={19} aria-hidden="true" /></span>
+              <p>Demo funds are virtual and can be reset to $10,000.00 at any time. Open Demo trades remain active after a reset, and their results can change the balance later. Real-account deposits and withdrawals are available when payments are configured; live trading is not available yet.</p>
+            </aside>
+          )}
+          {!cashierWalletIsDemo && cashierPaymentMode && (
+            <form className="cashier-payment-form" onSubmit={(event) => void submitCashierPayment(event)}>
+              <div className="cashier-payment-heading">
+                <strong>{cashierPaymentMode === 'deposit' ? 'Deposit with M-Pesa' : 'Request a withdrawal'}</strong>
+                <button
+                  type="button"
+                  className="cashier-payment-close"
+                  onClick={() => setCashierPaymentMode(null)}
+                  disabled={cashierPaymentBusy}
+                  aria-label="Close payment form"
+                >
+                  <X size={15} aria-hidden="true" />
+                </button>
+              </div>
+              <label className="cashier-payment-field">
+                Amount (USD)
+                <input
+                  type="number"
+                  min="1"
+                  step="0.01"
+                  inputMode="decimal"
+                  value={cashierPaymentAmount}
+                  onChange={(event) => setCashierPaymentAmount(event.target.value)}
+                  disabled={cashierPaymentBusy}
+                  required
+                />
+              </label>
+              <p className="cashier-payment-conversion">
+                {cashierKesPerUsd
+                  ? `Approx. KES ${Math.round((Number(cashierPaymentAmount) || 0) * cashierKesPerUsd).toLocaleString('en-KE')} at KES ${cashierKesPerUsd.toLocaleString('en-US')} per USD.`
+                  : 'KES/USD rate is not available yet. An administrator must set it before payments can be processed.'}
+              </p>
+              <p className="cashier-payment-note">
+                {cashierPaymentMode === 'deposit'
+                  ? 'An M-Pesa prompt will be sent to the phone number on your account. Your USD balance is credited after MegaPay confirms payment.'
+                  : 'The USD amount is reserved immediately. An administrator will send the KES amount to your registered M-Pesa number.'}
+              </p>
+              <div className="cashier-payment-actions">
+                <button
+                  type="submit"
+                  className="cashier-action-button"
+                  disabled={cashierPaymentBusy || !authUser}
+                >
+                  {cashierPaymentBusy
+                    ? 'Processing…'
+                    : cashierPaymentMode === 'deposit'
+                      ? 'Send M-Pesa prompt'
+                      : 'Request withdrawal'}
+                </button>
+                <button
+                  type="button"
+                  className="admin-button"
+                  onClick={() => setCashierPaymentMode(null)}
+                  disabled={cashierPaymentBusy}
+                >
+                  Cancel
+                </button>
+              </div>
+            </form>
+          )}
+          <section
+            className="cashier-transaction-section"
+            aria-label={cashierWalletIsDemo ? 'Market volatility list' : 'Transaction history'}
+          >
+            {!cashierWalletIsDemo && (
+              <div className="cashier-section-heading">
+                <h2 id="transaction-history-title">Transaction history</h2>
+              </div>
+            )}
+            {cashierTransactionsLoading && !cashierTransactions.length ? (
+              <p className="cashier-message" role="status">Loading transactions…</p>
+            ) : visibleCashierTransactions.length ? (
+              <div className="cashier-transaction-list">
+                {visibleCashierTransactions
+                  .map((transaction) => (
+                    <article className="cashier-transaction-row" key={transaction.id}>
+                      <div>
+                        <strong>{transaction.type === 'deposit' ? 'Deposit' : 'Withdrawal'}</strong>
+                        <span>{localTime(Number.isFinite(Date.parse(transaction.createdAt)) ? Date.parse(transaction.createdAt) / 1000 : 0)} UTC</span>
+                      </div>
+                      <strong className="cashier-transaction-amount">
+                        {transaction.type === 'deposit' ? '+' : '-'}{formatMoney(transaction.amount)}
+                      </strong>
+                      <span className={`cashier-transaction-status is-${transaction.status}${transaction.status === 'completed' ? ` is-${transaction.type}` : ''}`}>
+                        {transaction.status.charAt(0).toUpperCase() + transaction.status.slice(1)}
+                      </span>
+                    </article>
+                  ))}
+              </div>
+            ) : (
+              <div className="cashier-market-list">
+                {VOLATILITY_SYMBOLS.map((symbol) => {
+                  const liveSymbol = market.symbols.find((item) => item.symbol === symbol.symbol);
+                  const marketOpen = !!liveSymbol?.exchangeOpen && !liveSymbol.suspended;
+                  const trend = cashierMarketTrends[symbol.symbol] ?? [];
+                  const trendMin = trend.length ? Math.min(...trend) : 0;
+                  const trendMax = trend.length ? Math.max(...trend) : 0;
+                  const trendRange = trendMax - trendMin;
+                  const trendCoordinates = trend.map((quote, index) => {
+                    const x = trend.length === 1 ? 0 : index * (56 / (trend.length - 1));
+                    const y = trendRange === 0 ? 14 : 26 - ((quote - trendMin) / trendRange) * 24;
+                    return { x, y };
+                  });
+                  const trendPath = trendCoordinates.length >= 2
+                    ? trendCoordinates.slice(0, -1).reduce((path, point, index) => {
+                      const previous = trendCoordinates[Math.max(0, index - 1)];
+                      const next = trendCoordinates[index + 1];
+                      const following = trendCoordinates[Math.min(trendCoordinates.length - 1, index + 2)];
+                      const controlOneX = point.x + (next.x - previous.x) / 6;
+                      const controlOneY = point.y + (next.y - previous.y) / 6;
+                      const controlTwoX = next.x - (following.x - point.x) / 6;
+                      const controlTwoY = next.y - (following.y - point.y) / 6;
+                      return `${path} C ${controlOneX},${controlOneY} ${controlTwoX},${controlTwoY} ${next.x},${next.y}`;
+                    }, `M ${trendCoordinates[0].x},${trendCoordinates[0].y}`)
+                    : '';
+                  const isBullish = trend.length >= 2
+                    ? trend.at(-1)! >= trend[0]
+                    : true;
+                  return (
+                    <article className="cashier-market-row" key={symbol.symbol}>
+                      <div className="cashier-market-info">
+                        <span className="cashier-market-icon"><BarChart3 size={15} aria-hidden="true" /></span>
+                        <div>
+                          <strong>{symbol.name}</strong>
+                          <span>{symbol.symbol}</span>
+                        </div>
+                      </div>
+                      <svg
+                        className={`cashier-market-trend ${isBullish ? 'is-bullish' : 'is-bearish'}`}
+                        viewBox="0 0 56 28"
+                        role="img"
+                        aria-label={`${symbol.name} ${trend.length ? (isBullish ? 'bullish' : 'bearish') : 'trend'} trend`}
+                      >
+                        {trendPath && <path d={trendPath} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />}
+                      </svg>
+                      <span className={`cashier-market-status ${marketOpen ? 'is-open' : 'is-closed'}`}>
+                        {marketOpen ? 'Market open' : 'Market closed'}
+                      </span>
+                      <button
+                        type="button"
+                        className="cashier-trade-button"
+                        onClick={() => {
+                          market.setSelectedSymbol(symbol.symbol);
+                          setCurrentPage('hub');
+                        }}
+                      >
+                        Trade
+                      </button>
+                    </article>
+                  );
+                })}
+              </div>
+            )}
+          </section>
         </section>
       )}
 
@@ -1479,7 +1948,8 @@ export function MarketPilotDashboard() {
                   theme={theme}
                 />
               </div>
-              <section className="digit-distribution-panel" id="statistics">
+              {kind !== 'rise-fall' && (
+                <section className="digit-distribution-panel" id="statistics">
                 <div className="section-heading">
                   <h2>Digit distribution</h2>
                 </div>
@@ -1521,7 +1991,8 @@ export function MarketPilotDashboard() {
                     )}
                   </div>
                 </div>
-              </section>
+                </section>
+              )}
             </section>
 
             <TradeHistoryPanel
@@ -1573,11 +2044,11 @@ export function MarketPilotDashboard() {
                       max="9"
                       step="1"
                       value={digit}
-                      onChange={(event) => {
-                        const value = event.target.value === '' ? 0 : Number(event.target.value);
-                        setDigit(Number.isFinite(value) ? Math.max(0, Math.min(9, Math.round(value))) : 3);
-                      }}
+                      aria-invalid={digitError !== ''}
+                      aria-describedby={digitError ? 'prediction-digit-error' : undefined}
+                      onChange={(event) => setDigit(event.target.value)}
                     />
+                    {digitError && <p id="prediction-digit-error" className="trade-action-error" role="alert">{digitError}</p>}
                   </div>
                 )}
                 <div className="form-field">
@@ -1586,11 +2057,10 @@ export function MarketPilotDashboard() {
                     <input
                       id="duration"
                       type="number"
-                      min={durationLimits.min}
-                      max={durationLimits.max}
                       step="1"
-                      value={safeDuration}
-                      onChange={(event) => setDuration(Number(event.target.value))}
+                      value={duration}
+                      aria-invalid={durationError !== ''}
+                      onChange={(event) => setDuration(event.target.value)}
                       disabled={!contractInfo}
                     />
                     <span>{durationLimits.unit}</span>
@@ -1606,7 +2076,7 @@ export function MarketPilotDashboard() {
                       min="0.35"
                       step="0.01"
                       value={stake}
-                      onChange={(event) => setStake(Number(event.target.value))}
+                      onChange={(event) => setStake(event.target.value)}
                     />
                   </div>
                 </div>
@@ -1646,7 +2116,6 @@ function TradeRow({ trade, currency }: { trade: PracticeTrade; currency: string 
         {isOpen ? (
           <>
             <span className="trade-status open"><i /> Open · {trade.elapsed}/{trade.duration}</span>
-            <small>{trade.outcomeSource === 'test_simulation' ? 'Synthetic outcome · waiting for expiry' : 'Market-based Demo trade'}</small>
           </>
         ) : (
           <>
@@ -1654,21 +2123,9 @@ function TradeRow({ trade, currency }: { trade: PracticeTrade; currency: string 
             <strong className={(trade.profit ?? 0) > 0 ? 'positive' : (trade.profit ?? 0) < 0 ? 'negative' : ''}>
               {(trade.profit ?? 0) > 0 ? '+' : ''}{(trade.profit ?? 0).toFixed(2)} {currency}
             </strong>
-            {trade.outcomeSource === 'test_simulation' && (
-              <>
-                <small className="test-outcome-note">
-                  {trade.simulatedExitPrice == null
-                    ? `Simulated exit digit ${trade.simulatedExitDigit ?? '—'}`
-                    : `Simulated exit ${trade.simulatedExitPrice.toFixed(exitPrecision)} · digit ${trade.simulatedExitDigit ?? '—'}`}
-                </small>
-                <small>Synthetic Demo result · market exit omitted here</small>
-              </>
-            )}
-            {trade.outcomeSource !== 'test_simulation' && (
-              <small>
-                Actual market exit {trade.exitPrice?.toFixed(exitPrecision) ?? '—'} · digit {trade.exitDigit ?? '—'} · {trade.exitEpoch ? `${localTime(trade.exitEpoch)} UTC` : ''}
-              </small>
-            )}
+            <small>
+              Actual market exit {trade.exitPrice?.toFixed(exitPrecision) ?? '—'} · digit {trade.exitDigit ?? '—'} · {trade.exitEpoch ? `${localTime(trade.exitEpoch)} UTC` : ''}
+            </small>
           </>
         )}
       </div>

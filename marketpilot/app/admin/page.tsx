@@ -1,6 +1,10 @@
 import { redirect } from 'next/navigation';
 import { connection } from 'next/server';
-import { AdminDashboard, type AdminDashboardData } from '@/components/admin/admin-dashboard';
+import {
+  AdminDashboard,
+  type AdminDashboardData,
+  type AdminPaymentTransaction,
+} from '@/components/admin/admin-dashboard';
 import { createSupabaseServerClient } from '@/lib/supabase/server';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -13,28 +17,31 @@ function isFiniteNumber(value: unknown): value is number {
 
 function parseAdminDashboardData(
   value: unknown,
-  testDemoWinRate: unknown,
   marketRealWinRate: unknown,
+  depositsToday: unknown,
+  paymentRate: unknown,
+  paymentTransactions: unknown,
 ): AdminDashboardData {
-  if (!isRecord(value) || !Array.isArray(value.users)) {
+  if (!isRecord(value) || !Array.isArray(value.users) || !Array.isArray(paymentTransactions)) {
     throw new Error('The administrator report returned invalid data.');
   }
 
-  const { totalUsers, activeUsers, dormantUsers, realLossesToday, totalRealBalance } = value;
-  const depositsToday = value.depositsToday;
+  const { totalUsers, activeUsers, dormantUsers, totalRealBalance } = value;
   if (
     !isFiniteNumber(totalUsers) || totalUsers < 0 ||
     !isFiniteNumber(activeUsers) || activeUsers < 0 ||
     !isFiniteNumber(dormantUsers) || dormantUsers < 0 ||
-    !isFiniteNumber(realLossesToday) || realLossesToday < 0 ||
     !isFiniteNumber(totalRealBalance) || totalRealBalance < 0 ||
-    !isFiniteNumber(testDemoWinRate) || !Number.isInteger(testDemoWinRate) ||
-    testDemoWinRate < 0 || testDemoWinRate > 100 ||
     (depositsToday !== null && (!isFiniteNumber(depositsToday) || depositsToday < 0)) ||
     (marketRealWinRate !== null &&
       (!isFiniteNumber(marketRealWinRate) || marketRealWinRate < 0 || marketRealWinRate > 100))
   ) {
     throw new Error('The administrator report returned invalid metrics.');
+  }
+  if (
+    (paymentRate !== null && (!isFiniteNumber(paymentRate) || paymentRate <= 0))
+  ) {
+    throw new Error('The administrator payment rate is invalid.');
   }
 
   const users: AdminDashboardData['users'] = value.users.map((row: unknown) => {
@@ -52,15 +59,66 @@ function parseAdminDashboardData(
     return { username, email, phone, activityStatus, realBalance };
   });
 
+  const transactions: AdminPaymentTransaction[] = paymentTransactions.map((row: unknown) => {
+    if (!isRecord(row)) throw new Error('The administrator report returned an invalid payment.');
+    const {
+      id,
+      username,
+      email,
+      type,
+      status,
+      amountUsd,
+      amountKes,
+      phone,
+      reference,
+      megapayReceipt,
+      adminReceipt,
+      approved,
+      createdAt,
+    } = row;
+    if (
+      typeof id !== 'string' ||
+      typeof username !== 'string' ||
+      typeof email !== 'string' ||
+      (type !== 'deposit' && type !== 'withdrawal') ||
+      (status !== 'pending' && status !== 'completed' && status !== 'declined') ||
+      !isFiniteNumber(amountUsd) || amountUsd <= 0 ||
+      !isFiniteNumber(amountKes) || amountKes <= 0 ||
+      typeof phone !== 'string' ||
+      typeof reference !== 'string' ||
+      (megapayReceipt !== null && typeof megapayReceipt !== 'string') ||
+      (adminReceipt !== null && typeof adminReceipt !== 'string') ||
+      typeof approved !== 'boolean' ||
+      typeof createdAt !== 'string'
+    ) {
+      throw new Error('The administrator report returned an invalid payment.');
+    }
+    return {
+      id,
+      username,
+      email,
+      type,
+      status,
+      amountUsd,
+      amountKes,
+      phone,
+      reference,
+      megapayReceipt,
+      adminReceipt,
+      approved,
+      createdAt,
+    };
+  });
+
   return {
     totalUsers,
     activeUsers,
     dormantUsers,
     depositsToday,
-    realLossesToday,
     totalRealBalance,
     realWinRate: marketRealWinRate,
-    testDemoWinRate,
+    kesPerUsd: paymentRate,
+    transactions,
     users,
   };
 }
@@ -82,18 +140,24 @@ export default async function AdminPage() {
   if (roleError) throw new Error(`Could not verify administrator access: ${roleError.message}`);
   if (!isAdmin) redirect('/');
 
-  const [statsResult, testRateResult, marketRateResult] = await Promise.all([
+  const [statsResult, marketRateResult, depositsTodayResult, paymentRateResult, paymentTransactionsResult] = await Promise.all([
     supabase.rpc('marketpilot_admin_dashboard_stats'),
-    supabase.rpc('marketpilot_admin_get_demo_test_win_rate'),
     supabase.rpc('marketpilot_admin_get_market_real_win_rate'),
+    supabase.rpc('marketpilot_admin_deposits_today'),
+    supabase.rpc('marketpilot_get_kes_per_usd'),
+    supabase.rpc('marketpilot_admin_list_transactions'),
   ]);
   if (statsResult.error) throw new Error(`Could not load administrator reports: ${statsResult.error.message}`);
-  if (testRateResult.error) throw new Error(`Could not load test outcome settings: ${testRateResult.error.message}`);
   if (marketRateResult.error) throw new Error(`Could not load historical market win rate: ${marketRateResult.error.message}`);
+  if (depositsTodayResult.error) throw new Error(`Could not load today's deposits: ${depositsTodayResult.error.message}`);
+  if (paymentRateResult.error) throw new Error(`Could not load the payment exchange rate: ${paymentRateResult.error.message}`);
+  if (paymentTransactionsResult.error) throw new Error(`Could not load payment transactions: ${paymentTransactionsResult.error.message}`);
   const dashboardData = parseAdminDashboardData(
     statsResult.data,
-    testRateResult.data,
     marketRateResult.data,
+    depositsTodayResult.data,
+    paymentRateResult.data,
+    paymentTransactionsResult.data,
   );
 
   return (

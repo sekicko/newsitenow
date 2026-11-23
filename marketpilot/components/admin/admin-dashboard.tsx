@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useState, type FormEvent } from 'react';
 import { useRouter } from 'next/navigation';
 import { Activity, RefreshCw, ShieldCheck, Users, Wallet } from 'lucide-react';
 import { getSupabaseBrowserClient } from '@/lib/supabase/browser';
@@ -13,15 +13,31 @@ type AdminUser = {
   realBalance: number;
 };
 
+export type AdminPaymentTransaction = {
+  id: string;
+  username: string;
+  email: string;
+  type: 'deposit' | 'withdrawal';
+  status: 'pending' | 'completed' | 'declined';
+  amountUsd: number;
+  amountKes: number;
+  phone: string;
+  reference: string;
+  megapayReceipt: string | null;
+  adminReceipt: string | null;
+  approved: boolean;
+  createdAt: string;
+};
+
 export type AdminDashboardData = {
   totalUsers: number;
   activeUsers: number;
   dormantUsers: number;
   depositsToday: number | null;
-  realLossesToday: number;
   totalRealBalance: number;
   realWinRate: number | null;
-  testDemoWinRate: number;
+  kesPerUsd: number | null;
+  transactions: AdminPaymentTransaction[];
   users: AdminUser[];
 };
 
@@ -45,20 +61,10 @@ export function AdminDashboard({
   const router = useRouter();
   const [actionError, setActionError] = useState('');
   const [signingOut, setSigningOut] = useState(false);
-  const [demoWinRateText, setDemoWinRateText] = useState(String(data.testDemoWinRate));
-  const [savedDemoWinRate, setSavedDemoWinRate] = useState(data.testDemoWinRate);
-  const [rateMessage, setRateMessage] = useState('');
-  const [rateError, setRateError] = useState('');
+  const [kesRate, setKesRate] = useState(data.kesPerUsd?.toString() ?? '');
   const [savingRate, setSavingRate] = useState(false);
-  const parsedDemoRate = demoWinRateText.trim() === '' ? NaN : Number(demoWinRateText);
-  const displayedDemoRate = Number.isInteger(parsedDemoRate) && parsedDemoRate >= 0 && parsedDemoRate <= 100
-    ? parsedDemoRate
-    : savedDemoWinRate;
-
-  useEffect(() => {
-    setDemoWinRateText(String(data.testDemoWinRate));
-    setSavedDemoWinRate(data.testDemoWinRate);
-  }, [data.testDemoWinRate]);
+  const [processingTransactionId, setProcessingTransactionId] = useState('');
+  const [withdrawalReceipts, setWithdrawalReceipts] = useState<Record<string, string>>({});
 
   const signOut = async () => {
     setSigningOut(true);
@@ -73,33 +79,49 @@ export function AdminDashboard({
     }
   };
 
-  const saveDemoWinRate = async () => {
-    if (!Number.isInteger(parsedDemoRate) || parsedDemoRate < 0 || parsedDemoRate > 100) {
-      setRateError('Enter a whole-number test win chance from 0 to 100.');
-      setRateMessage('');
+  const saveExchangeRate = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const rate = Number(kesRate);
+    if (!Number.isFinite(rate) || rate <= 0 || savingRate) {
+      setActionError('Enter a valid KES per USD exchange rate.');
       return;
     }
 
     setSavingRate(true);
-    setRateError('');
-    setRateMessage('');
+    setActionError('');
     try {
-      const { data: savedRate, error } = await getSupabaseBrowserClient().rpc(
-        'marketpilot_admin_set_demo_test_win_rate',
-        { p_demo_win_rate: parsedDemoRate },
-      );
+      const { error } = await getSupabaseBrowserClient().rpc('marketpilot_admin_set_kes_per_usd', {
+        p_rate: rate,
+      });
       if (error) throw error;
-      const confirmedRate = typeof savedRate === 'number' ? savedRate : Number(savedRate);
-      if (!Number.isInteger(confirmedRate) || confirmedRate < 0 || confirmedRate > 100) {
-        throw new Error('The saved test win chance was invalid.');
-      }
-      setSavedDemoWinRate(confirmedRate);
-      setDemoWinRateText(String(confirmedRate));
-      setRateMessage('Test win chances saved for new Demo trades.');
+      setKesRate(rate.toString());
+      router.refresh();
     } catch (error) {
-      setRateError(errorMessage(error));
+      setActionError(errorMessage(error));
     } finally {
       setSavingRate(false);
+    }
+  };
+
+  const processWithdrawal = async (
+    transactionId: string,
+    action: 'approve' | 'complete' | 'decline',
+  ) => {
+    if (processingTransactionId) return;
+    setProcessingTransactionId(transactionId);
+    setActionError('');
+    try {
+      const { error } = await getSupabaseBrowserClient().rpc('marketpilot_admin_process_withdrawal', {
+        p_transaction_id: transactionId,
+        p_action: action,
+        p_admin_receipt: action === 'complete' ? withdrawalReceipts[transactionId]?.trim() ?? null : null,
+      });
+      if (error) throw error;
+      router.refresh();
+    } catch (error) {
+      setActionError(errorMessage(error));
+    } finally {
+      setProcessingTransactionId('');
     }
   };
 
@@ -151,53 +173,133 @@ export function AdminDashboard({
               <span>Deposits today · real</span>
               <strong>{data.depositsToday === null ? 'Not tracked' : money(data.depositsToday)}</strong>
             </div>
-            <div>
-              <span>Real-account test losses today</span>
-              <strong>{money(data.realLossesToday)}</strong>
-            </div>
             <div className="admin-volume-balance">
               <span>Current real wallet balance</span>
               <strong>{money(data.totalRealBalance)}</strong>
             </div>
           </div>
-          <p className="admin-card-note">Deposit activity is not recorded yet. Daily figures use UTC.</p>
+          <p className="admin-card-note">Completed deposits are recorded in USD. Daily figures use UTC.</p>
         </article>
 
         <article className="admin-card">
           <div className="admin-card-title">
             <span className="admin-card-icon"><Activity size={17} /></span>
-            <h2>Test win-rate settings</h2>
+            <h2>Market-based win rate</h2>
           </div>
-          <label className="admin-rate-label" htmlFor="demo-test-win-rate">Demo test win chance</label>
-          <div className="admin-rate-control">
-            <input
-              id="demo-test-win-rate"
-              type="number"
-              min="0"
-              max="100"
-              step="1"
-              value={demoWinRateText}
-              onChange={(event) => {
-                setDemoWinRateText(event.target.value);
-                setRateError('');
-                setRateMessage('');
-              }}
-            />
-            <span>%</span>
-          </div>
-          <p className="admin-rate-complement">Real-account test chance: <strong>{100 - displayedDemoRate}%</strong></p>
-          <button type="button" className="admin-save-rate" onClick={() => void saveDemoWinRate()} disabled={savingRate}>
-            {savingRate ? 'Saving…' : 'Save test chances'}
-          </button>
-          {rateError && <p className="admin-rate-feedback is-error" role="alert">{rateError}</p>}
-          {rateMessage && <p className="admin-rate-feedback" role="status">{rateMessage}</p>}
+          <strong className="admin-card-total">{data.realWinRate === null ? '—' : `${data.realWinRate.toFixed(1)}%`}</strong>
           <p className="admin-card-note">
-            Per-trade synthetic test odds for new Demo trades; rates are not guaranteed long-run quotas. Market prices and actual exits are unchanged. Real-account trading is disabled.
-          </p>
-          <p className="admin-card-note">
-            Historical market-based real-account win rate: {data.realWinRate === null ? '—' : `${data.realWinRate.toFixed(1)}%`}
+            Historical win rate from closed, market-settled Real-account trades.
           </p>
         </article>
+      </section>
+
+      <section className="admin-card admin-payments">
+        <div className="admin-list-heading">
+          <div>
+            <p className="eyebrow">REAL ACCOUNT PAYMENTS</p>
+            <h2>Exchange rate and payment requests</h2>
+          </div>
+        </div>
+        <form className="admin-rate-form" onSubmit={(event) => void saveExchangeRate(event)}>
+          <label>
+            KES per USD
+            <input
+              type="number"
+              min="0.01"
+              max="1000000"
+              step="0.000001"
+              value={kesRate}
+              onChange={(event) => setKesRate(event.target.value)}
+              required
+            />
+          </label>
+          <button type="submit" className="admin-button" disabled={savingRate}>
+            {savingRate ? 'Saving…' : 'Save rate'}
+          </button>
+          <span>
+            {data.kesPerUsd
+              ? `Current: KES ${data.kesPerUsd.toLocaleString('en-US')} = $1.00`
+              : 'Set the rate to enable deposits and withdrawals.'}
+          </span>
+        </form>
+
+        <div className="admin-table-scroll" tabIndex={0} aria-label="Recent deposits and withdrawals">
+          <table className="admin-table">
+            <thead>
+              <tr>
+                <th scope="col">Account</th>
+                <th scope="col">Type</th>
+                <th scope="col">USD</th>
+                <th scope="col">KES</th>
+                <th scope="col">M-Pesa number</th>
+                <th scope="col">Status</th>
+                <th scope="col">Receipt / actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.transactions.length ? data.transactions.map((transaction) => (
+                <tr key={transaction.id}>
+                  <td>{transaction.username}<br /><small>{transaction.email}</small></td>
+                  <td>{transaction.type}</td>
+                  <td>{money(transaction.amountUsd)}</td>
+                  <td>KES {transaction.amountKes.toLocaleString('en-KE')}</td>
+                  <td>{transaction.phone}</td>
+                  <td><span className={`admin-payment-status is-${transaction.status}`}>{transaction.status.charAt(0).toUpperCase() + transaction.status.slice(1)}</span></td>
+                  <td>
+                    {transaction.type === 'deposit' ? (
+                      transaction.megapayReceipt ?? transaction.reference
+                    ) : transaction.status !== 'pending' ? (
+                      transaction.adminReceipt ?? transaction.reference
+                    ) : (
+                      <div className="admin-payment-actions">
+                        {transaction.approved ? (
+                          <>
+                            <input
+                              aria-label={`M-Pesa receipt for ${transaction.username}`}
+                              placeholder="M-Pesa receipt"
+                              value={withdrawalReceipts[transaction.id] ?? ''}
+                              onChange={(event) => setWithdrawalReceipts((current) => ({
+                                ...current,
+                                [transaction.id]: event.target.value,
+                              }))}
+                            />
+                            <button
+                              type="button"
+                              className="admin-button"
+                              onClick={() => void processWithdrawal(transaction.id, 'complete')}
+                              disabled={processingTransactionId !== '' || !(withdrawalReceipts[transaction.id] ?? '').trim()}
+                            >
+                              Mark paid
+                            </button>
+                          </>
+                        ) : (
+                          <button
+                            type="button"
+                            className="admin-button"
+                            onClick={() => void processWithdrawal(transaction.id, 'approve')}
+                            disabled={processingTransactionId !== ''}
+                          >
+                            Approve
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          className="admin-button admin-button--danger"
+                          onClick={() => void processWithdrawal(transaction.id, 'decline')}
+                          disabled={processingTransactionId !== ''}
+                        >
+                          Decline
+                        </button>
+                      </div>
+                    )}
+                  </td>
+                </tr>
+              )) : (
+                <tr><td className="admin-empty" colSpan={7}>No payment transactions yet.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
       </section>
 
       <section className="admin-card admin-user-list">
