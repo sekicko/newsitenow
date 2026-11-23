@@ -358,6 +358,8 @@ export function MarketPilotDashboard() {
   const [cashierKesPerUsd, setCashierKesPerUsd] = useState<number | null>(null);
   const [cashierPaymentMode, setCashierPaymentMode] = useState<'deposit' | 'withdrawal' | null>(null);
   const [cashierPaymentAmount, setCashierPaymentAmount] = useState('10');
+  const [cashierPaymentPhone, setCashierPaymentPhone] = useState('');
+  const [cashierPaymentPhoneLoading, setCashierPaymentPhoneLoading] = useState(false);
   const [cashierPaymentBusy, setCashierPaymentBusy] = useState(false);
   const [cashierMarketTrends, setCashierMarketTrends] = useState<Record<string, number[]>>({});
   const [sidebarError, setSidebarError] = useState('');
@@ -660,6 +662,57 @@ export function MarketPilotDashboard() {
       active = false;
     };
   }, [authUser?.id, currentPage]);
+
+  useEffect(() => {
+    if (!cashierPaymentMode) return;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && !cashierPaymentBusy) setCashierPaymentMode(null);
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [cashierPaymentBusy, cashierPaymentMode]);
+
+  useEffect(() => {
+    if (cashierPaymentMode !== 'deposit' || !authUser?.id) {
+      setCashierPaymentPhoneLoading(false);
+      return;
+    }
+
+    let active = true;
+    setCashierPaymentPhoneLoading(true);
+    const loadPhone = async () => {
+      try {
+        const { data, error } = await getSupabaseBrowserClient()
+          .from('marketpilot_profiles')
+          .select('phone_e164')
+          .eq('id', authUser.id)
+          .maybeSingle();
+        if (!active) return;
+        if (error) throw error;
+        if (typeof data?.phone_e164 !== 'string') {
+          throw new Error('A phone number is not available on your account.');
+        }
+        setCashierPaymentPhone(data.phone_e164);
+      } catch (error) {
+        if (active) {
+          setCashierPaymentPhone('');
+          setCashierError(error instanceof Error ? error.message : 'Your account phone number could not be loaded.');
+        }
+      } finally {
+        if (active) setCashierPaymentPhoneLoading(false);
+      }
+    };
+    void loadPhone();
+
+    return () => {
+      active = false;
+    };
+  }, [authUser?.id, cashierPaymentMode]);
 
   useEffect(() => {
     if (!authUser?.id || currentPage !== 'cashier') return;
@@ -1092,8 +1145,14 @@ export function MarketPilotDashboard() {
     if (!authUser || activeWallet !== 'real' || !cashierPaymentMode || cashierPaymentBusy) return;
 
     const amountUsd = Number(cashierPaymentAmount);
-    if (!Number.isFinite(amountUsd) || amountUsd < 1) {
-      setCashierError('Enter an amount of at least $1.00.');
+    if (!Number.isFinite(amountUsd) || amountUsd < 1 || (cashierPaymentMode === 'deposit' && amountUsd > 500)) {
+      setCashierError(cashierPaymentMode === 'deposit'
+        ? 'Enter a deposit amount between $1.00 and $500.00.'
+        : 'Enter an amount of at least $1.00.');
+      return;
+    }
+    if (cashierPaymentMode === 'deposit' && !cashierPaymentPhone.trim()) {
+      setCashierError('Enter the phone number for the M-Pesa prompt.');
       return;
     }
 
@@ -1106,7 +1165,10 @@ export function MarketPilotDashboard() {
       const response = await fetch(`/api/payments/${mode}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ amountUsd }),
+        body: JSON.stringify({
+          amountUsd,
+          ...(mode === 'deposit' ? { phone: cashierPaymentPhone.trim() } : {}),
+        }),
       });
       const result: unknown = await response.json();
       if (!result || typeof result !== 'object') {
@@ -1654,64 +1716,112 @@ export function MarketPilotDashboard() {
             </aside>
           )}
           {!cashierWalletIsDemo && cashierPaymentMode && (
-            <form className="cashier-payment-form" onSubmit={(event) => void submitCashierPayment(event)}>
-              <div className="cashier-payment-heading">
-                <strong>{cashierPaymentMode === 'deposit' ? 'Deposit with M-Pesa' : 'Request a withdrawal'}</strong>
-                <button
-                  type="button"
-                  className="cashier-payment-close"
-                  onClick={() => setCashierPaymentMode(null)}
-                  disabled={cashierPaymentBusy}
-                  aria-label="Close payment form"
-                >
-                  <X size={15} aria-hidden="true" />
-                </button>
-              </div>
-              <label className="cashier-payment-field">
-                Amount (USD)
-                <input
-                  type="number"
-                  min="1"
-                  step="0.01"
-                  inputMode="decimal"
-                  value={cashierPaymentAmount}
-                  onChange={(event) => setCashierPaymentAmount(event.target.value)}
-                  disabled={cashierPaymentBusy}
-                  required
-                />
-              </label>
-              <p className="cashier-payment-conversion">
-                {cashierKesPerUsd
-                  ? `Approx. KES ${Math.round((Number(cashierPaymentAmount) || 0) * cashierKesPerUsd).toLocaleString('en-KE')} at KES ${cashierKesPerUsd.toLocaleString('en-US')} per USD.`
-                  : 'KES/USD rate is not available yet. An administrator must set it before payments can be processed.'}
-              </p>
-              <p className="cashier-payment-note">
-                {cashierPaymentMode === 'deposit'
-                  ? 'An M-Pesa prompt will be sent to the phone number on your account. Your USD balance is credited after MegaPay confirms payment.'
-                  : 'The USD amount is reserved immediately. An administrator will send the KES amount to your registered M-Pesa number.'}
-              </p>
-              <div className="cashier-payment-actions">
-                <button
-                  type="submit"
-                  className="cashier-action-button"
-                  disabled={cashierPaymentBusy || !authUser}
-                >
-                  {cashierPaymentBusy
-                    ? 'Processing…'
-                    : cashierPaymentMode === 'deposit'
-                      ? 'Send M-Pesa prompt'
-                      : 'Request withdrawal'}
-                </button>
-                <button
-                  type="button"
-                  className="admin-button"
-                  onClick={() => setCashierPaymentMode(null)}
-                  disabled={cashierPaymentBusy}
-                >
-                  Cancel
-                </button>
-              </div>
-            </form>
+            <div className="cashier-payment-overlay">
+              <button
+                type="button"
+                className="cashier-payment-backdrop"
+                aria-label="Close payment dialog"
+                onClick={() => {
+                  if (!cashierPaymentBusy) setCashierPaymentMode(null);
+                }}
+              />
+              <form
+                className="cashier-payment-form"
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="cashier-payment-title"
+                onSubmit={(event) => void submitCashierPayment(event)}
+              >
+                <div className="cashier-payment-heading">
+                  <strong id="cashier-payment-title">{cashierPaymentMode === 'deposit' ? 'Deposit with M-Pesa' : 'Request a withdrawal'}</strong>
+                  <button
+                    type="button"
+                    className="cashier-payment-close"
+                    onClick={() => setCashierPaymentMode(null)}
+                    disabled={cashierPaymentBusy}
+                    aria-label="Close payment form"
+                  >
+                    <X size={15} aria-hidden="true" />
+                  </button>
+                </div>
+                <label className="cashier-payment-field">
+                  Amount (USD)
+                  <input
+                    type="number"
+                    min="1"
+                    max={cashierPaymentMode === 'deposit' ? '500' : undefined}
+                    step="0.01"
+                    inputMode="decimal"
+                    value={cashierPaymentAmount}
+                    onChange={(event) => setCashierPaymentAmount(event.target.value)}
+                    disabled={cashierPaymentBusy}
+                    required
+                  />
+                </label>
+                {cashierPaymentMode === 'deposit' && (
+                  <>
+                    <div className="cashier-amount-quick-picks" role="group" aria-label="Choose a deposit amount">
+                      {[5, 10, 20, 50, 100, 200, 500].map((amount) => (
+                        <button
+                          key={amount}
+                          type="button"
+                          className={Number(cashierPaymentAmount) === amount ? 'is-selected' : ''}
+                          onClick={() => setCashierPaymentAmount(String(amount))}
+                          disabled={cashierPaymentBusy}
+                        >
+                          ${amount}
+                        </button>
+                      ))}
+                    </div>
+                    <label className="cashier-payment-field">
+                      M-Pesa phone number
+                      <input
+                        type="tel"
+                        autoComplete="tel"
+                        inputMode="tel"
+                        value={cashierPaymentPhone}
+                        onChange={(event) => setCashierPaymentPhone(event.target.value)}
+                        disabled={cashierPaymentBusy || cashierPaymentPhoneLoading}
+                        placeholder={cashierPaymentPhoneLoading ? 'Loading account phone…' : '+254…'}
+                        required
+                      />
+                      <small>Prefilled from your account. Edit it if you want the prompt sent to another number.</small>
+                    </label>
+                  </>
+                )}
+                <p className="cashier-payment-conversion">
+                  {cashierKesPerUsd
+                    ? `Approx. KES ${Math.round((Number(cashierPaymentAmount) || 0) * cashierKesPerUsd).toLocaleString('en-KE')} at KES ${cashierKesPerUsd.toLocaleString('en-US')} per USD.`
+                    : 'KES/USD rate is not available yet. An administrator must set it before payments can be processed.'}
+                </p>
+                <p className="cashier-payment-note">
+                  {cashierPaymentMode === 'deposit'
+                    ? 'An M-Pesa prompt will be sent to the phone number entered above. Your USD balance is credited after MegaPay confirms payment.'
+                    : 'The USD amount is reserved immediately. An administrator will send the KES amount to your registered M-Pesa number.'}
+                </p>
+                <div className="cashier-payment-actions">
+                  <button
+                    type="submit"
+                    className="cashier-action-button"
+                    disabled={cashierPaymentBusy || !authUser || (cashierPaymentMode === 'deposit' && cashierPaymentPhoneLoading)}
+                  >
+                    {cashierPaymentBusy
+                      ? 'Processing…'
+                      : cashierPaymentMode === 'deposit'
+                        ? 'Send M-Pesa prompt'
+                        : 'Request withdrawal'}
+                  </button>
+                  <button
+                    type="button"
+                    className="admin-button"
+                    onClick={() => setCashierPaymentMode(null)}
+                    disabled={cashierPaymentBusy}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </form>
+            </div>
           )}
           <section
             className="cashier-transaction-section"
