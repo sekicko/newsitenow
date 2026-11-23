@@ -225,6 +225,7 @@ function AuthModal({
   onClose: () => void;
 }) {
   const [email, setEmail] = useState('');
+  const [fullName, setFullName] = useState('');
   const [displayName, setDisplayName] = useState('');
   const [identifier, setIdentifier] = useState('');
   const [country, setCountry] = useState<CountryCode | ''>('');
@@ -337,7 +338,12 @@ function AuthModal({
     setMessage(null);
     try {
       const cleanEmail = email.trim().toLowerCase();
+      const cleanFullName = fullName.trim();
       const cleanDisplayName = displayName.trim();
+      const fullNameLength = Array.from(cleanFullName).length;
+      if (fullNameLength < 2 || fullNameLength > 120) {
+        throw new Error('Full name must be 2–120 characters.');
+      }
       if (!/^[A-Za-z0-9_]{3,24}$/.test(cleanDisplayName)) {
         throw new Error('Username must be 3–24 characters using letters, numbers, or underscores.');
       }
@@ -352,23 +358,6 @@ function AuthModal({
       if (password !== confirmPassword) throw new Error('The passwords do not match.');
       if (!termsAccepted) throw new Error('You must agree to the Terms and Conditions to create an account.');
 
-      const availabilityResponse = await fetch('/api/auth/account-availability', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          phone: parsedPhone.number,
-        }),
-      });
-      if (availabilityResponse.ok) {
-        const availability = await availabilityResponse.json() as {
-          available: boolean;
-          field?: 'phone';
-        };
-        if (!availability.available && availability.field === 'phone') {
-          throw new Error('That phone number is already registered. Log in or use Forgot password.');
-        }
-      }
-
       const supabase = getSupabaseBrowserClient();
       const redirectTo = `${window.location.origin}/auth/callback?next=/`;
       const { data, error } = await supabase.auth.signUp({
@@ -377,6 +366,7 @@ function AuthModal({
         options: {
           emailRedirectTo: redirectTo,
           data: {
+            full_name: cleanFullName,
             display_name: cleanDisplayName,
             phone_e164: parsedPhone.number,
             terms_accepted_at: new Date().toISOString(),
@@ -389,7 +379,9 @@ function AuthModal({
           throw new Error('An account with this email already exists. Log in or use Forgot password.');
         }
         if (message.includes('database error saving new user')) {
-          throw new Error('The account could not be created. Review your details and try again.');
+          throw new Error(
+            'Account creation failed in Supabase. Check the signup migrations and whether this email, phone number, or username is already in use.',
+          );
         }
         throw error;
       }
@@ -498,6 +490,21 @@ function AuthModal({
 
         {mode === 'signup' && (
           <form className="auth-form signup-form" onSubmit={signup}>
+            <label className="auth-field">
+              <span>Full name</span>
+              <span className="auth-input-wrap">
+                <UserRound size={15} />
+                <input
+                  type="text"
+                  autoComplete="name"
+                  value={fullName}
+                  onChange={(event) => setFullName(event.target.value)}
+                  minLength={2}
+                  maxLength={120}
+                  required
+                />
+              </span>
+            </label>
             <label className="auth-field">
               <span>Display name (username)</span>
               <span className="auth-input-wrap">

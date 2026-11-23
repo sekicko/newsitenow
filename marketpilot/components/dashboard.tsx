@@ -110,6 +110,8 @@ function parseStoredTrade(value: unknown, entrySerial: number): PracticeTrade | 
   ) return null;
 
   const barrier = row.barrier === null ? null : storedNumber(row.barrier);
+  const simulatedExitPrice = row.simulated_exit_price == null ? null : storedNumber(row.simulated_exit_price);
+  const simulatedExitDigit = row.simulated_exit_digit == null ? null : storedNumber(row.simulated_exit_digit);
   const exitPrice = row.exit_price === null ? null : storedNumber(row.exit_price);
   const exitPipSize = row.exit_pip_size === null ? null : storedNumber(row.exit_pip_size);
   const exitDigit = row.exit_digit === null ? null : storedNumber(row.exit_digit);
@@ -118,6 +120,9 @@ function parseStoredTrade(value: unknown, entrySerial: number): PracticeTrade | 
   const profit = row.profit === null ? null : storedNumber(row.profit);
   if (
     (row.barrier !== null && barrier === null) ||
+    (row.simulated_exit_price != null && simulatedExitPrice === null) ||
+    (row.simulated_exit_digit != null &&
+      (simulatedExitDigit === null || !Number.isInteger(simulatedExitDigit) || simulatedExitDigit < 0 || simulatedExitDigit > 9)) ||
     (row.exit_price !== null && exitPrice === null) ||
     (row.exit_pip_size !== null && exitPipSize === null) ||
     (row.exit_digit !== null && exitDigit === null) ||
@@ -147,6 +152,8 @@ function parseStoredTrade(value: unknown, entrySerial: number): PracticeTrade | 
     status: row.status === 'open' ? 'Open' : row.status === 'won' ? 'Won' : 'Lost',
     outcomeSource,
     testWinProbability,
+    ...(simulatedExitPrice === null ? {} : { simulatedExitPrice }),
+    ...(simulatedExitDigit === null ? {} : { simulatedExitDigit }),
     ...(exitPrice === null ? {} : { exitPrice }),
     ...(exitPipSize === null ? {} : { exitPipSize }),
     ...(exitDigit === null ? {} : { exitDigit }),
@@ -171,6 +178,8 @@ type SettlementResult = {
   profit: number;
   outcomeSource: 'market_data' | 'test_simulation';
   testWinProbability: number | null;
+  simulatedExitPrice: number | null;
+  simulatedExitDigit: number | null;
 };
 
 function parseSettlementResult(value: unknown): SettlementResult | null {
@@ -179,6 +188,8 @@ function parseSettlementResult(value: unknown): SettlementResult | null {
   const balance = storedNumber(row.balance);
   const payout = storedNumber(row.payout);
   const profit = storedNumber(row.profit);
+  const simulatedExitPrice = row.simulatedExitPrice == null ? null : storedNumber(row.simulatedExitPrice);
+  const simulatedExitDigit = row.simulatedExitDigit == null ? null : storedNumber(row.simulatedExitDigit);
   const testWinProbability = row.testWinProbability === null
     ? null
     : storedNumber(row.testWinProbability);
@@ -186,6 +197,9 @@ function parseSettlementResult(value: unknown): SettlementResult | null {
     balance === null ||
     payout === null ||
     profit === null ||
+    (row.simulatedExitPrice != null && simulatedExitPrice === null) ||
+    (row.simulatedExitDigit != null &&
+      (simulatedExitDigit === null || !Number.isInteger(simulatedExitDigit) || simulatedExitDigit < 0 || simulatedExitDigit > 9)) ||
     (row.status !== 'won' && row.status !== 'lost') ||
     (row.outcomeSource !== 'market_data' && row.outcomeSource !== 'test_simulation') ||
     (row.testWinProbability !== null && row.testWinProbability !== undefined &&
@@ -198,6 +212,34 @@ function parseSettlementResult(value: unknown): SettlementResult | null {
     profit,
     outcomeSource: row.outcomeSource,
     testWinProbability,
+    simulatedExitPrice,
+    simulatedExitDigit,
+  };
+}
+
+function parsePersistedSettlement(value: unknown, balance: number, entrySerial: number): SettlementResult | null {
+  const trade = parseStoredTrade(value, entrySerial);
+  if (
+    !trade ||
+    trade.status === 'Open' ||
+    trade.exitPrice === undefined ||
+    trade.exitPipSize === undefined ||
+    trade.exitDigit === undefined ||
+    trade.exitEpoch === undefined ||
+    trade.payout === undefined ||
+    trade.profit === undefined ||
+    balance < 0
+  ) return null;
+
+  return {
+    balance,
+    status: trade.status === 'Won' ? 'won' : 'lost',
+    payout: trade.payout,
+    profit: trade.profit,
+    outcomeSource: trade.outcomeSource,
+    testWinProbability: trade.testWinProbability ?? null,
+    simulatedExitPrice: trade.simulatedExitPrice ?? null,
+    simulatedExitDigit: trade.simulatedExitDigit ?? null,
   };
 }
 
@@ -394,7 +436,7 @@ export function MarketPilotDashboard() {
     : null;
   const digitExitDescription = selectedDigitExitHighlight
     ? selectedDigitExitHighlight.outcomeSource === 'test_simulation'
-      ? ` The synthetic ${selectedDigitExitHighlight.outcome} result used the actual market exit digit ${selectedDigitExitHighlight.digit}.`
+      ? ` The synthetic ${selectedDigitExitHighlight.outcome} result digit ${selectedDigitExitHighlight.digit} is highlighted; the actual market exit remains separate.`
       : ` The ${selectedDigitExitHighlight.outcome} trade exit digit ${selectedDigitExitHighlight.digit} is highlighted temporarily.`
     : '';
   const pointerDigit = activeDigitTrade ? activeDigit : selectedDigitExitHighlight?.digit ?? activeDigit;
@@ -691,7 +733,8 @@ export function MarketPilotDashboard() {
       settlingTradeIdsRef.current.add(settlementKey);
       const settleTrade = async () => {
         try {
-          const { data, error } = await getSupabaseBrowserClient().rpc('marketpilot_settle_practice_trade', {
+          const supabase = getSupabaseBrowserClient();
+          const { data, error } = await supabase.rpc('marketpilot_settle_practice_trade', {
             p_trade_id: trade.id,
             p_account_type: trade.accountType,
             p_exit_price: exitTick.quote,
@@ -699,10 +742,29 @@ export function MarketPilotDashboard() {
             p_exit_digit: getLastDigit(exitTick),
             p_exit_epoch: exitTick.epoch,
           });
-          if (error) throw error;
-          const settlement = parseSettlementResult(data);
+          if (error) throw new Error(`Supabase could not settle this Demo trade: ${error.message}`);
+          let settlement = parseSettlementResult(data);
+          if (!settlement) {
+            const balance = storedNumber(data);
+            if (balance === null || balance < 0) {
+              throw new Error(
+                'Supabase returned an invalid settlement response. Apply migration 20261122143000_marketpilot_test_outcome_rates.sql and verify that it completed.',
+              );
+            }
+            const { data: savedTrade, error: readError } = await supabase
+              .from('marketpilot_practice_trades')
+              .select('*')
+              .eq('user_id', userId)
+              .eq('id', trade.id)
+              .eq('account_type', trade.accountType)
+              .maybeSingle();
+            if (readError) {
+              throw new Error(`The trade balance was updated, but its saved result could not be loaded: ${readError.message}`);
+            }
+            settlement = parsePersistedSettlement(savedTrade, balance, trade.entrySerial);
+          }
           if (!settlement || settlement.balance < 0) {
-            throw new Error('The wallet returned an invalid settlement.');
+            throw new Error('The database returned a balance but did not save a completed trade result.');
           }
           if (authUserIdRef.current === userId) {
             setWalletBalances((current) => current
@@ -714,6 +776,8 @@ export function MarketPilotDashboard() {
               status: settlement.status === 'won' ? 'Won' : 'Lost',
               outcomeSource: settlement.outcomeSource,
               testWinProbability: settlement.testWinProbability,
+              simulatedExitPrice: settlement.simulatedExitPrice,
+              simulatedExitDigit: settlement.simulatedExitDigit,
               exitPrice: exitTick.quote,
               exitPipSize: exitTick.pipSize,
               exitDigit: getLastDigit(exitTick),
@@ -725,16 +789,21 @@ export function MarketPilotDashboard() {
               showDigitExitHighlight({
                 tradeId: trade.id,
                 symbol: trade.symbol,
-                digit: getLastDigit(exitTick),
+                digit: settlement.simulatedExitDigit ?? getLastDigit(exitTick),
                 outcome: settlement.status === 'won' ? 'win' : 'loss',
                 outcomeSource: settlement.outcomeSource,
               });
             }
             setTradeActionError('');
           }
-        } catch {
+        } catch (error) {
+          console.error('MarketPilot Demo trade settlement failed.', error);
           if (authUserIdRef.current === userId) {
-            setTradeActionError('Trade settlement could not be saved. It will retry on the next market tick.');
+            setTradeActionError(
+              error instanceof Error
+                ? error.message
+                : 'Trade settlement failed. Check the browser console for details.',
+            );
           }
         } finally {
           settlingTradeIdsRef.current.delete(settlementKey);
@@ -1244,7 +1313,7 @@ export function MarketPilotDashboard() {
                     <span className="cashier-wallet-title">{walletLabel}</span>
                     <strong className="cashier-wallet-balance">{balanceText}</strong>
                     <span className="cashier-wallet-description">
-                      {isDemo ? 'Practice with virtual funds.' : 'Real-money deposits and trading are not enabled.'}
+                      {isDemo ? 'Demo trading uses virtual funds.' : 'Real-money deposits and trading are not enabled.'}
                     </span>
                   </button>
                   {isDemo && (
@@ -1265,7 +1334,7 @@ export function MarketPilotDashboard() {
           <aside className="cashier-info-card">
             <span className="cashier-info-icon"><Wallet size={19} aria-hidden="true" /></span>
             <div>
-              <strong>Manage your practice funds</strong>
+              <strong>Manage Demo funds</strong>
               <p>Demo funds are virtual and can be reset to $10,000.00 at any time. Open Demo trades remain active after a reset, and their results can change the balance later. Your real account is read-only; deposits and live trading are not available.</p>
             </div>
           </aside>
@@ -1419,7 +1488,7 @@ export function MarketPilotDashboard() {
                   role="img"
                   aria-label={activeDigit === null
                     ? 'Digit distribution from zero to nine. Waiting for market data.'
-                    : `Digit distribution from zero to nine. Active last digit: ${activeDigit}.${activeDigitTrade ? ' An open practice trade highlights the live digit in blue.' : digitExitDescription}`}
+                    : `Digit distribution from zero to nine. Active last digit: ${activeDigit}.${activeDigitTrade ? ' An open Demo trade highlights the live digit in blue.' : digitExitDescription}`}
                 >
                   <div className="digit-distribution-track">
                     {Array.from({ length: 10 }, (_, value) => {
@@ -1474,10 +1543,6 @@ export function MarketPilotDashboard() {
                 </div>
                 <span className="practice-icon"><Activity size={17} /></span>
               </div>
-              <p className="test-simulation-notice">
-                Test-odds practice only: outcomes may be synthetic, but displayed market exits remain actual market data.
-                Synthetic results are marked in trade history. Real-account trading is disabled.
-              </p>
 
               <div className="form-field">
                 <label>Contract type</label>
@@ -1581,7 +1646,7 @@ function TradeRow({ trade, currency }: { trade: PracticeTrade; currency: string 
         {isOpen ? (
           <>
             <span className="trade-status open"><i /> Open · {trade.elapsed}/{trade.duration}</span>
-            <small>{trade.outcomeSource === 'test_simulation' ? 'Test simulation · market exit unchanged' : 'Market-based practice trade'}</small>
+            <small>{trade.outcomeSource === 'test_simulation' ? 'Synthetic outcome · waiting for expiry' : 'Market-based Demo trade'}</small>
           </>
         ) : (
           <>
@@ -1590,13 +1655,20 @@ function TradeRow({ trade, currency }: { trade: PracticeTrade; currency: string 
               {(trade.profit ?? 0) > 0 ? '+' : ''}{(trade.profit ?? 0).toFixed(2)} {currency}
             </strong>
             {trade.outcomeSource === 'test_simulation' && (
-              <small className="test-outcome-note">
-                Synthetic result · {trade.testWinProbability ?? '—'}% test chance
+              <>
+                <small className="test-outcome-note">
+                  {trade.simulatedExitPrice == null
+                    ? `Simulated exit digit ${trade.simulatedExitDigit ?? '—'}`
+                    : `Simulated exit ${trade.simulatedExitPrice.toFixed(exitPrecision)} · digit ${trade.simulatedExitDigit ?? '—'}`}
+                </small>
+                <small>Synthetic Demo result · market exit omitted here</small>
+              </>
+            )}
+            {trade.outcomeSource !== 'test_simulation' && (
+              <small>
+                Actual market exit {trade.exitPrice?.toFixed(exitPrecision) ?? '—'} · digit {trade.exitDigit ?? '—'} · {trade.exitEpoch ? `${localTime(trade.exitEpoch)} UTC` : ''}
               </small>
             )}
-            <small>
-              Actual exit {trade.exitPrice?.toFixed(exitPrecision) ?? '—'} · digit {trade.exitDigit ?? '—'} · {trade.exitEpoch ? `${localTime(trade.exitEpoch)} UTC` : ''}
-            </small>
           </>
         )}
       </div>

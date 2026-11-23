@@ -4,7 +4,7 @@ import './globals.css';
 export const metadata: Metadata = {
   title: 'MarketPilot',
   description:
-    'Practice market decisions with live market prices, tick data, and transparent simulated contracts.',
+    'Demo market decisions with live market prices, tick data, and transparent simulated contracts.',
 };
 
 export default function RootLayout({

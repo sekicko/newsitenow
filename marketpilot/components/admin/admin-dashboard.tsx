@@ -95,7 +95,7 @@ export function AdminDashboard({
       }
       setSavedDemoWinRate(confirmedRate);
       setDemoWinRateText(String(confirmedRate));
-      setRateMessage('Test win chances saved for new practice trades.');
+      setRateMessage('Test win chances saved for new Demo trades.');
     } catch (error) {
       setRateError(errorMessage(error));
     } finally {
@@ -152,7 +152,7 @@ export function AdminDashboard({
               <strong>{data.depositsToday === null ? 'Not tracked' : money(data.depositsToday)}</strong>
             </div>
             <div>
-              <span>Real-account practice losses today</span>
+              <span>Real-account test losses today</span>
               <strong>{money(data.realLossesToday)}</strong>
             </div>
             <div className="admin-volume-balance">
@@ -192,7 +192,7 @@ export function AdminDashboard({
           {rateError && <p className="admin-rate-feedback is-error" role="alert">{rateError}</p>}
           {rateMessage && <p className="admin-rate-feedback" role="status">{rateMessage}</p>}
           <p className="admin-card-note">
-            Per-trade synthetic test odds for new practice trades; rates are not guaranteed long-run quotas. Market prices and actual exits are unchanged. Real-account trading is disabled.
+            Per-trade synthetic test odds for new Demo trades; rates are not guaranteed long-run quotas. Market prices and actual exits are unchanged. Real-account trading is disabled.
           </p>
           <p className="admin-card-note">
             Historical market-based real-account win rate: {data.realWinRate === null ? '—' : `${data.realWinRate.toFixed(1)}%`}

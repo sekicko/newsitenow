@@ -21,6 +21,8 @@ export type PracticeTrade = {
   status: 'Open' | 'Won' | 'Lost';
   outcomeSource: 'market_data' | 'test_simulation';
   testWinProbability?: number | null;
+  simulatedExitDigit?: number | null;
+  simulatedExitPrice?: number | null;
   exitPrice?: number;
   exitPipSize?: number;
   exitDigit?: number;

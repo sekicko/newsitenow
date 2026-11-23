@@ -364,7 +364,7 @@ select option { color: var(--text); background: var(--surface); }
   border-right: 7px solid transparent;
   border-left: 7px solid transparent;
   transform: translateX(-50%);
-  transition: left .18s ease;
+  transition: left .55s cubic-bezier(.22, 1, .36, 1);
 }
 .digit-pointer.is-practice-active { border-bottom-color: var(--blue-bright); }
 .digit-pointer.is-exit-win { animation: digit-pointer-win 2s ease-out forwards; }
