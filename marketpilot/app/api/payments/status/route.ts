@@ -29,7 +29,7 @@ export async function POST(request: NextRequest) {
   const admin = getSupabaseAdminClient();
   const { data: transaction, error: transactionError } = await admin
     .from('marketpilot_transactions')
-    .select('id,user_id,status,transaction_type,amount_kes,megapay_request_id')
+    .select('id,user_id,status,transaction_type,amount_kes,amount_usd,megapay_request_id')
     .eq('id', transactionId)
     .eq('user_id', user.id)
     .maybeSingle();
@@ -59,11 +59,13 @@ export async function POST(request: NextRequest) {
       }
       balance = parsedBalance;
     }
-    return NextResponse.json({ ...result, ...(balance === undefined ? {} : { balance }) });
+    return NextResponse.json({
+      ...result,
+      amountUsd: Number(transaction.amount_usd),
+      ...(balance === undefined ? {} : { balance }),
+    });
   } catch (error) {
     console.error('MegaPay payment verification failed.', error);
-    return NextResponse.json({
-      error: error instanceof Error ? error.message : 'Payment verification is temporarily unavailable.',
-    }, { status: 502 });
+    return NextResponse.json({ status: 'pending' });
   }
 }

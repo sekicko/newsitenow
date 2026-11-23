@@ -30,17 +30,18 @@ export async function verifyAndSettleMegaPayDeposit(
   if (!transaction.megapay_request_id) return { status: 'pending' };
 
   const result = await getMegaPayTransactionStatus(transaction.megapay_request_id);
-  const providerStatus = typeof result.TransactionStatus === 'string'
-    ? result.TransactionStatus.trim().toLowerCase()
+  const rawStatus = result.TransactionStatus ?? result.transaction_status ?? result.status;
+  const providerStatus = typeof rawStatus === 'string'
+    ? rawStatus.trim().toLowerCase()
     : '';
 
-  if (providerStatus === 'completed') {
-    const amountKes = numberValue(result.TransactionAmount);
-    const transactionCode = result.TransactionCode;
-    const providerTransactionId = result.TransactionID;
-    const receipt = result.TransactionReceipt;
-    const phone = result.Msisdn;
-    const reference = result.TransactionReference;
+  if (['completed', 'complete', 'success', 'successful'].includes(providerStatus)) {
+    const amountKes = numberValue(result.TransactionAmount ?? result.transaction_amount);
+    const transactionCode = result.TransactionCode ?? result.transaction_code;
+    const providerTransactionId = result.TransactionID ?? result.transaction_id;
+    const receipt = result.TransactionReceipt ?? result.transaction_receipt;
+    const phone = result.Msisdn ?? result.msisdn;
+    const reference = result.TransactionReference ?? result.transaction_reference;
     if (
       amountKes === null ||
       (transactionCode !== '0' && transactionCode !== 0) ||

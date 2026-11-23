@@ -5,7 +5,11 @@ type MegaPayCredentials = {
   email: string;
 };
 
-export class MegaPayRejectedError extends Error {}
+export class MegaPayRejectedError extends Error {
+  constructor(message: string, readonly requestId: string | null = null) {
+    super(message);
+  }
+}
 
 function getCredentials(): MegaPayCredentials {
   const apiKey = process.env.MEGAPAY_API_KEY?.trim();
@@ -22,6 +26,12 @@ export function assertMegaPayConfigured(): void {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function getRequestId(result: Record<string, unknown>): string | null {
+  const requestId = [result.transaction_request_id, result.checkout_id]
+    .find((value): value is string => typeof value === 'string' && value.length > 0 && value.length <= 200);
+  return requestId ?? null;
 }
 
 async function postMegaPay(
@@ -52,6 +62,8 @@ async function postMegaPay(
       : typeof result.massage === 'string'
         ? result.massage
         : 'MegaPay could not process the request.';
+    const requestId = endpoint === 'initiatestk' ? getRequestId(result) : null;
+    if (endpoint === 'initiatestk') throw new MegaPayRejectedError(message, requestId);
     throw new Error(message);
   }
   return result;
@@ -71,17 +83,19 @@ export async function initiateMegaPayStk(input: {
     reference: input.reference,
   });
 
-  const requestId = result.transaction_request_id;
-  if (
-    (result.success !== '200' && result.success !== 200) ||
-    typeof requestId !== 'string' ||
-    requestId.length < 1 ||
-    requestId.length > 200
-  ) {
+  const requestId = getRequestId(result);
+  if (!requestId) {
     const message = typeof result.massage === 'string'
       ? result.massage
-      : 'MegaPay did not accept the M-Pesa payment request.';
+      : 'The payment request did not return a confirmation reference.';
     throw new MegaPayRejectedError(message);
+  }
+
+  if (result.success !== '200' && result.success !== 200) {
+    const message = typeof result.massage === 'string'
+      ? result.massage
+      : 'The payment request needs status confirmation.';
+    throw new MegaPayRejectedError(message, requestId);
   }
 
   return { requestId };
