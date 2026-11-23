@@ -462,8 +462,8 @@ select option { color: var(--text); background: var(--surface); }
   align-items: start;
   gap: 3px;
   min-width: 0;
-  min-height: 82px;
-  padding: 10px;
+  min-height: 68px;
+  padding: 7px 10px;
   border: 1px solid;
   border-radius: 9px;
   text-align: left;
@@ -474,8 +474,8 @@ select option { color: var(--text); background: var(--surface); }
 .contract-action-button.is-negative { color: #fff; border-color: #bd3541; background: #bd3541; }
 .contract-action-button:hover:not(:disabled) { filter: brightness(1.12); transform: translateY(-1px); }
 .contract-action-button:disabled { cursor: not-allowed; }
-.contract-action-name { grid-area: name; font: 800 21px/1.2 'Manrope', sans-serif; overflow-wrap: anywhere; }
-.contract-action-payout { grid-area: payout; font: 700 13px/1.25 'Manrope', sans-serif; font-variant-numeric: tabular-nums; }
+.contract-action-name { grid-area: name; justify-self: center; font: 800 24px/1.15 'Manrope', sans-serif; text-align: center; overflow-wrap: anywhere; }
+.contract-action-payout { grid-area: payout; justify-self: center; font: 700 13px/1.25 'Manrope', sans-serif; font-variant-numeric: tabular-nums; text-align: center; }
 .contract-action-button small { grid-area: detail; color: rgba(255, 255, 255, .82); font-size: 8px; line-height: 1.4; overflow-wrap: anywhere; }
 .open-trade-note { display: flex; align-items: center; gap: 7px; padding-top: 10px; margin-top: 10px; color: var(--text-secondary); border-top: 1px solid var(--border); font-size: 9px; }
 
@@ -559,8 +559,8 @@ select option { color: var(--text); background: var(--surface); }
     box-shadow: 0 8px 30px rgba(0, 0, 0, .28);
     backdrop-filter: blur(14px);
   }
-  .contract-action-button { min-height: 82px; padding: 8px; }
-  .contract-action-name { font-size: 18px; }
+  .contract-action-button { min-height: 62px; padding: 6px 8px; }
+  .contract-action-name { font-size: 21px; }
   .contract-action-payout { font-size: 12px; }
   .contract-action-button small { font-size: 7px; }
   .history-panel { padding: 15px 12px; }
@@ -967,6 +967,17 @@ select option { color: var(--text); background: var(--surface); }
 .cashier-real-actions { display: flex; flex: 0 0 auto; align-items: center; gap: 8px; }
 .cashier-action-button { min-height: 36px; padding: 0 13px; color: #08784f; border: 1px solid #fff; border-radius: 7px; background: #fff; font-size: 10px; font-weight: 800; cursor: pointer; }
 .cashier-action-button:disabled { opacity: .72; cursor: not-allowed; }
+.cashier-payment-form { display: grid; max-width: 520px; gap: 12px; padding: 16px; margin-top: 15px; border: 1px solid var(--border); border-radius: 11px; background: var(--surface); }
+.cashier-payment-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: var(--text); font: 700 13px/1.3 'Manrope', sans-serif; }
+.cashier-payment-close { display: grid; width: 30px; height: 30px; place-items: center; padding: 0; color: var(--text-secondary); border: 1px solid var(--border); border-radius: 7px; background: var(--surface); cursor: pointer; }
+.cashier-payment-close:disabled { opacity: .6; cursor: wait; }
+.cashier-payment-field { display: grid; gap: 6px; color: var(--text-secondary); font-size: 10px; font-weight: 700; }
+.cashier-payment-field input { width: 100%; min-height: 38px; padding: 0 10px; color: var(--text); border: 1px solid var(--border); border-radius: 7px; outline: none; background: var(--surface-raised); font: 600 12px 'DM Sans', sans-serif; }
+.cashier-payment-field input:focus { border-color: var(--blue-bright); }
+.cashier-payment-conversion, .cashier-payment-note { margin: 0; color: var(--text-secondary); font-size: 10px; line-height: 1.5; }
+.cashier-payment-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.cashier-payment-actions .cashier-action-button { color: #fff; border-color: #08784f; background: #08784f; }
+.cashier-payment-actions .cashier-action-button:hover:not(:disabled) { border-color: #066a45; background: #066a45; }
 .cashier-info-card { display: flex; width: 100%; align-items: flex-start; gap: 12px; padding: 16px; margin: 17px 0 0; border: 1px solid var(--border); border-radius: 11px; background: var(--surface); }
 .cashier-info-icon { display: grid; flex: 0 0 auto; width: 34px; height: 34px; place-items: center; color: var(--blue-bright); border: 1px solid rgba(66, 133, 244, .2); border-radius: 9px; background: rgba(66, 133, 244, .08); }
 .cashier-info-card p { min-width: 0; margin: 0; color: var(--text-secondary); font-size: 10px; line-height: 1.6; overflow-wrap: anywhere; }
@@ -1052,6 +1063,19 @@ select option { color: var(--text); background: var(--surface); }
 .admin-volume-grid span { color: var(--text-secondary); font-size: 10px; }
 .admin-volume-grid strong { font: 700 12px/1.3 'Manrope', sans-serif; text-align: right; }
 .admin-volume-grid .admin-volume-balance { padding-top: 10px; border-top: 1px solid var(--border); }
+.admin-payments { margin-bottom: 16px; }
+.admin-rate-form { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px; margin-bottom: 16px; }
+.admin-rate-form label { display: grid; min-width: 180px; gap: 5px; color: var(--text-secondary); font-size: 9px; font-weight: 700; }
+.admin-rate-form input, .admin-payment-actions input { min-height: 34px; padding: 0 9px; color: var(--text); border: 1px solid var(--border); border-radius: 6px; outline: none; background: var(--surface-raised); font: 600 10px 'DM Sans', sans-serif; }
+.admin-rate-form input:focus, .admin-payment-actions input:focus { border-color: var(--blue-bright); }
+.admin-rate-form > span { padding-bottom: 9px; color: var(--text-muted); font-size: 9px; }
+.admin-payment-status { display: inline-flex; padding: 5px 7px; border-radius: 999px; font-size: 8px; font-weight: 800; }
+.admin-payment-status.is-pending { color: #b56a12; background: rgba(230, 160, 68, .16); }
+.admin-payment-status.is-completed { color: #08784f; background: rgba(8, 120, 79, .12); }
+.admin-payment-status.is-declined { color: var(--red); background: rgba(201, 48, 44, .12); }
+.admin-payment-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.admin-payment-actions input { width: 130px; }
+.admin-button--danger { color: var(--red); }
 
 .admin-list-heading { display: flex; align-items: center; justify-content: space-between; margin-bottom: 13px; }
 .admin-list-heading h2 span { margin-left: 5px; color: var(--text-muted); font: 500 10px 'DM Sans', sans-serif; }

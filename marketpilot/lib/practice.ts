@@ -38,11 +38,16 @@ const DIGIT_OVER_UNDER_PROFIT_AT_ONE_USD: Record<number, number> = {
   8: 7.21,
 };
 
-export function getFixedDigitOverUnderPayout(
+export function getFixedContractPayout(
   contractType: string,
   barrier: number | null,
   stake: number,
 ): number | null {
+  if (contractType === 'DIGITEVEN' || contractType === 'DIGITODD' || contractType === 'CALL' || contractType === 'PUT') {
+    const roundedProfit = Number((stake * 0.933).toFixed(2));
+    return Number((stake + roundedProfit).toFixed(2));
+  }
+
   if (!Number.isInteger(barrier) || barrier === null) return null;
 
   const profitBarrier = contractType === 'DIGITOVER'

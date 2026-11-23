@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import {
   Activity,
   BarChart3,
@@ -33,7 +33,7 @@ import {
   type MarketTick,
   type PracticeKind,
 } from '@/lib/deriv-client';
-import { getFixedDigitOverUnderPayout, type PracticeTrade } from '@/lib/practice';
+import { getFixedContractPayout, type PracticeTrade } from '@/lib/practice';
 import { getSupabaseBrowserClient } from '@/lib/supabase/browser';
 import type { User } from '@supabase/supabase-js';
 import type { WalletAccount, WalletBalances } from '@/lib/wallets';
@@ -70,9 +70,48 @@ type DigitExitHighlight = {
   outcome: 'win' | 'loss';
 };
 
+type CashierTransaction = {
+  id: string;
+  accountType: WalletAccount;
+  type: 'deposit' | 'withdrawal';
+  status: 'completed' | 'pending' | 'declined';
+  amount: number;
+  createdAt: string;
+};
+
 function storedNumber(value: unknown): number | null {
   const parsed = typeof value === 'number' || typeof value === 'string' ? Number(value) : NaN;
   return Number.isFinite(parsed) ? parsed : null;
+}
+
+async function loadCashierTransactions(userId: string): Promise<CashierTransaction[]> {
+  const { data, error } = await getSupabaseBrowserClient()
+    .from('marketpilot_transactions')
+    .select('id,transaction_type,status,amount_usd,created_at')
+    .eq('user_id', userId)
+    .eq('account_type', 'real')
+    .order('created_at', { ascending: false })
+    .limit(100);
+  if (error) throw error;
+
+  return (data ?? []).flatMap((row) => {
+    const amount = storedNumber(row.amount_usd);
+    if (
+      typeof row.id !== 'string' ||
+      (row.transaction_type !== 'deposit' && row.transaction_type !== 'withdrawal') ||
+      (row.status !== 'completed' && row.status !== 'pending' && row.status !== 'declined') ||
+      amount === null ||
+      typeof row.created_at !== 'string'
+    ) return [];
+    return [{
+      id: row.id,
+      accountType: 'real',
+      type: row.transaction_type,
+      status: row.status,
+      amount,
+      createdAt: row.created_at,
+    }];
+  });
 }
 
 function parseStoredTrade(value: unknown, entrySerial: number): PracticeTrade | null {
@@ -313,16 +352,13 @@ export function MarketPilotDashboard() {
   const [cashierError, setCashierError] = useState('');
   const [cashierMessage, setCashierMessage] = useState('');
   const [cashierResetting, setCashierResetting] = useState(false);
-  const [cashierTransactions] = useState<
-    Array<{
-      id: string;
-      accountType: WalletAccount;
-      type: 'deposit' | 'withdrawal';
-      status: 'completed' | 'pending' | 'declined';
-      amount: number;
-      createdAt: string;
-    }>
-  >([]);
+  const [cashierTransactions, setCashierTransactions] = useState<CashierTransaction[]>([]);
+  const [cashierTransactionsOwner, setCashierTransactionsOwner] = useState<string | null>(null);
+  const [cashierTransactionsLoading, setCashierTransactionsLoading] = useState(false);
+  const [cashierKesPerUsd, setCashierKesPerUsd] = useState<number | null>(null);
+  const [cashierPaymentMode, setCashierPaymentMode] = useState<'deposit' | 'withdrawal' | null>(null);
+  const [cashierPaymentAmount, setCashierPaymentAmount] = useState('10');
+  const [cashierPaymentBusy, setCashierPaymentBusy] = useState(false);
   const [cashierMarketTrends, setCashierMarketTrends] = useState<Record<string, number[]>>({});
   const [sidebarError, setSidebarError] = useState('');
   const [signingOut, setSigningOut] = useState(false);
@@ -336,6 +372,7 @@ export function MarketPilotDashboard() {
   const tradeCounter = useRef(0);
   const openingTradeRef = useRef(false);
   const settlingTradeIdsRef = useRef(new Set<string>());
+  const cashierStatusChecksRef = useRef(new Set<string>());
   const digitExitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const clearDigitExitHighlight = useCallback(() => {
     if (digitExitTimerRef.current !== null) clearTimeout(digitExitTimerRef.current);
@@ -448,7 +485,7 @@ export function MarketPilotDashboard() {
     if (market.connectionState !== 'connected') return;
     const latestTrends = market.tickEvents.reduce<Record<string, number[]>>((current, { tick }) => {
       const prices = current[tick.symbol] ?? [];
-      current[tick.symbol] = [...prices, tick.quote].slice(-5);
+      current[tick.symbol] = [...prices, tick.quote].slice(-30);
       return current;
     }, {});
     if (!Object.keys(latestTrends).length) return;
@@ -464,13 +501,13 @@ export function MarketPilotDashboard() {
       try {
         const response = await market.request({
           ticks_history: symbol.symbol,
-          count: 5,
+          count: 30,
           end: 'latest',
           style: 'ticks',
         });
         const history = response.history as { prices?: unknown } | undefined;
         if (!Array.isArray(history?.prices)) return [symbol.symbol, [] as number[]] as const;
-        const prices = history.prices.filter((price): price is number => typeof price === 'number').slice(-5);
+        const prices = history.prices.filter((price): price is number => typeof price === 'number').slice(-30);
         return [symbol.symbol, prices] as const;
       } catch {
         return [symbol.symbol, [] as number[]] as const;
@@ -588,6 +625,117 @@ export function MarketPilotDashboard() {
   }, [authUser?.id, clearDigitExitHighlight]);
 
   useEffect(() => {
+    if (!authUser?.id || currentPage !== 'cashier') {
+      if (!authUser?.id) {
+        setCashierTransactions([]);
+        setCashierTransactionsOwner(null);
+        setCashierKesPerUsd(null);
+      }
+      setCashierTransactionsLoading(false);
+      return;
+    }
+
+    let active = true;
+    setCashierTransactionsLoading(true);
+    const supabase = getSupabaseBrowserClient();
+    void Promise.all([
+      loadCashierTransactions(authUser.id),
+      supabase.rpc('marketpilot_get_kes_per_usd'),
+    ]).then(([transactions, rateResult]) => {
+      if (!active) return;
+      if (rateResult.error) throw rateResult.error;
+      const rate = storedNumber(rateResult.data);
+      setCashierTransactions(transactions);
+      setCashierTransactionsOwner(authUser.id);
+      setCashierKesPerUsd(rate !== null && rate > 0 ? rate : null);
+      setCashierError('');
+    }).catch((error: unknown) => {
+      if (!active) return;
+      setCashierError(error instanceof Error ? error.message : 'Cashier information could not be loaded.');
+    }).finally(() => {
+      if (active) setCashierTransactionsLoading(false);
+    });
+
+    return () => {
+      active = false;
+    };
+  }, [authUser?.id, currentPage]);
+
+  useEffect(() => {
+    if (!authUser?.id || currentPage !== 'cashier') return;
+    const userId = authUser.id;
+    const intervalId = window.setInterval(() => {
+      void loadCashierTransactions(userId).then((transactions) => {
+        if (authUserIdRef.current === userId) {
+          setCashierTransactions(transactions);
+          setCashierTransactionsOwner(userId);
+        }
+      }).catch((error: unknown) => {
+        if (authUserIdRef.current === userId) {
+          setCashierError(error instanceof Error ? error.message : 'Transaction history could not be refreshed.');
+        }
+      });
+    }, 20_000);
+    return () => window.clearInterval(intervalId);
+  }, [authUser?.id, currentPage]);
+
+  const pendingDepositIds = cashierTransactionsOwner === authUser?.id
+    ? cashierTransactions
+      .filter((transaction) => transaction.type === 'deposit' && transaction.status === 'pending')
+      .map((transaction) => transaction.id)
+      .slice(0, 5)
+      .join(',')
+    : '';
+
+  useEffect(() => {
+    if (!authUser?.id || currentPage !== 'cashier' || !pendingDepositIds) return;
+    const userId = authUser.id;
+    const transactionIds = pendingDepositIds.split(',');
+    const checkPendingDeposits = async () => {
+      await Promise.all(transactionIds.map(async (transactionId) => {
+        if (cashierStatusChecksRef.current.has(transactionId)) return;
+        cashierStatusChecksRef.current.add(transactionId);
+        try {
+          const response = await fetch('/api/payments/status', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ transactionId }),
+            cache: 'no-store',
+          });
+          const result: unknown = await response.json();
+          if (
+            !response.ok ||
+            !result ||
+            typeof result !== 'object' ||
+            authUserIdRef.current !== userId
+          ) return;
+          const resultRecord = result as Record<string, unknown>;
+          const status = resultRecord.status;
+          if (status !== 'completed' && status !== 'declined') return;
+          setCashierTransactions((current) => current.map((transaction) =>
+            transaction.id === transactionId ? { ...transaction, status } : transaction,
+          ));
+          if (status === 'completed') {
+            const balance = storedNumber(resultRecord.balance);
+            if (balance !== null && authUserIdRef.current === userId) {
+              setWalletBalances((current) => current ? { ...current, real: balance } : current);
+            }
+            setCashierMessage('Deposit completed and added to your Real balance.');
+          }
+        } catch {
+          // A later poll can recover from temporary network failures.
+        } finally {
+          cashierStatusChecksRef.current.delete(transactionId);
+        }
+      }));
+    };
+
+    void checkPendingDeposits();
+    const intervalId = window.setInterval(() => void checkPendingDeposits(), 12_000);
+    return () => window.clearInterval(intervalId);
+  }, [authUser?.id, currentPage, pendingDepositIds]);
+
+  useEffect(() => {
     if (!availableChoices.length) return;
     if (!availableChoices.includes(contractType)) setContractType(availableChoices[0]);
   }, [availableChoices, contractType]);
@@ -638,7 +786,7 @@ export function MarketPilotDashboard() {
           setQuoteError('Market data did not return a complete price proposal.');
           return;
         }
-        const fixedPayout = getFixedDigitOverUnderPayout(
+        const fixedPayout = getFixedContractPayout(
           selectedContractType,
           digitIsValid ? digitValue : null,
           proposal.ask_price,
@@ -727,7 +875,7 @@ export function MarketPilotDashboard() {
           setAlternativeQuoteError('Market data did not return a complete price proposal.');
           return;
         }
-        const fixedPayout = getFixedDigitOverUnderPayout(
+        const fixedPayout = getFixedContractPayout(
           alternativeContractType,
           digitIsValid ? digitValue : null,
           proposal.ask_price,
@@ -903,6 +1051,16 @@ export function MarketPilotDashboard() {
   const chooseKind = (nextKind: PracticeKind) => {
     setKind(nextKind);
     setContractType(contractDefaults[nextKind]);
+    const minDuration = nextKind === 'rise-fall' ? 10 : 1;
+    const maxDuration = nextKind === 'rise-fall' ? 30 : 15;
+    const currentDuration = Number(duration);
+    if (
+      !Number.isInteger(currentDuration) ||
+      currentDuration < minDuration ||
+      currentDuration > maxDuration
+    ) {
+      setDuration(String(minDuration));
+    }
   };
 
   const resetDemoWallet = async () => {
@@ -926,6 +1084,70 @@ export function MarketPilotDashboard() {
       }
     } finally {
       setCashierResetting(false);
+    }
+  };
+
+  const submitCashierPayment = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!authUser || activeWallet !== 'real' || !cashierPaymentMode || cashierPaymentBusy) return;
+
+    const amountUsd = Number(cashierPaymentAmount);
+    if (!Number.isFinite(amountUsd) || amountUsd < 1) {
+      setCashierError('Enter an amount of at least $1.00.');
+      return;
+    }
+
+    const userId = authUser.id;
+    const mode = cashierPaymentMode;
+    setCashierPaymentBusy(true);
+    setCashierError('');
+    setCashierMessage('');
+    try {
+      const response = await fetch(`/api/payments/${mode}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ amountUsd }),
+      });
+      const result: unknown = await response.json();
+      if (!result || typeof result !== 'object') {
+        throw new Error('The payment service returned an invalid response.');
+      }
+      const resultRecord = result as Record<string, unknown>;
+      if (!response.ok) {
+        throw new Error(typeof resultRecord.error === 'string'
+          ? resultRecord.error
+          : 'The payment request could not be completed.');
+      }
+
+      const transactionId = resultRecord.transactionId;
+      if (typeof transactionId !== 'string') {
+        throw new Error('The payment service did not return a transaction reference.');
+      }
+
+      const rate = storedNumber(resultRecord.kesPerUsd);
+      if (rate !== null && rate > 0) setCashierKesPerUsd(rate);
+      const balance = storedNumber(resultRecord.balance);
+      if (mode === 'withdrawal' && balance !== null && authUserIdRef.current === userId) {
+        setWalletBalances((current) => current ? { ...current, real: balance } : current);
+      }
+
+      setCashierPaymentMode(null);
+      setCashierMessage(mode === 'deposit'
+        ? 'M-Pesa prompt sent to your registered phone. Approve it to complete your deposit.'
+        : 'Withdrawal requested. The amount is reserved while an administrator processes it.');
+      try {
+        const transactions = await loadCashierTransactions(userId);
+        if (authUserIdRef.current === userId) {
+          setCashierTransactions(transactions);
+          setCashierTransactionsOwner(userId);
+        }
+      } catch {
+        setCashierError('The request was accepted, but transaction history could not be refreshed.');
+      }
+    } catch (error) {
+      setCashierError(error instanceof Error ? error.message : 'The payment request could not be completed.');
+    } finally {
+      setCashierPaymentBusy(false);
     }
   };
 
@@ -1105,9 +1327,9 @@ export function MarketPilotDashboard() {
   const formatMoney = (amount: number) => `$${Math.abs(amount).toFixed(2)}`;
   const formatBalance = (amount: number) => `$${amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   const formatProfit = (amount: number) => `${amount >= 0 ? '+' : '-'}${formatMoney(amount)}`;
-  const visibleCashierTransactions = cashierTransactions.filter(
-    (transaction) => transaction.accountType === activeWallet,
-  );
+  const visibleCashierTransactions = cashierTransactionsOwner === authUser?.id
+    ? cashierTransactions.filter((transaction) => transaction.accountType === activeWallet)
+    : [];
   const cashierWalletIsDemo = activeWallet === 'demo';
   const cashierWalletLabel = cashierWalletIsDemo ? 'Demo account' : 'Real account';
   const cashierBalanceText = !authUser
@@ -1170,7 +1392,7 @@ export function MarketPilotDashboard() {
           >
             <span className="contract-action-name">{actionLabel}</span>
             {actionQuote ? (
-              <strong className="contract-action-payout">{formatMoney(actionQuote.payout)}</strong>
+              <strong className="contract-action-payout">Payout: {formatMoney(actionQuote.payout)}</strong>
             ) : null}
           </button>
         );
@@ -1396,10 +1618,28 @@ export function MarketPilotDashboard() {
                 )}
                 {!cashierWalletIsDemo && (
                   <div className="cashier-real-actions" role="group" aria-label="Real account actions">
-                    <button type="button" className="cashier-action-button" disabled>
+                    <button
+                      type="button"
+                      className="cashier-action-button"
+                      onClick={() => {
+                        setCashierError('');
+                        setCashierMessage('');
+                        setCashierPaymentMode('deposit');
+                      }}
+                      disabled={!authUser || cashierPaymentBusy}
+                    >
                       Deposit
                     </button>
-                    <button type="button" className="cashier-action-button" disabled>
+                    <button
+                      type="button"
+                      className="cashier-action-button"
+                      onClick={() => {
+                        setCashierError('');
+                        setCashierMessage('');
+                        setCashierPaymentMode('withdrawal');
+                      }}
+                      disabled={!authUser || cashierPaymentBusy}
+                    >
                       Withdraw
                     </button>
                   </div>
@@ -1410,16 +1650,81 @@ export function MarketPilotDashboard() {
           {cashierWalletIsDemo && (
             <aside className="cashier-info-card">
               <span className="cashier-info-icon"><Wallet size={19} aria-hidden="true" /></span>
-              <p>Demo funds are virtual and can be reset to $10,000.00 at any time. Open Demo trades remain active after a reset, and their results can change the balance later. Your real account is read-only; deposits and live trading are not available.</p>
+              <p>Demo funds are virtual and can be reset to $10,000.00 at any time. Open Demo trades remain active after a reset, and their results can change the balance later. Real-account deposits and withdrawals are available when payments are configured; live trading is not available yet.</p>
             </aside>
           )}
-          <section className="cashier-transaction-section" aria-labelledby="transaction-history-title">
+          {!cashierWalletIsDemo && cashierPaymentMode && (
+            <form className="cashier-payment-form" onSubmit={(event) => void submitCashierPayment(event)}>
+              <div className="cashier-payment-heading">
+                <strong>{cashierPaymentMode === 'deposit' ? 'Deposit with M-Pesa' : 'Request a withdrawal'}</strong>
+                <button
+                  type="button"
+                  className="cashier-payment-close"
+                  onClick={() => setCashierPaymentMode(null)}
+                  disabled={cashierPaymentBusy}
+                  aria-label="Close payment form"
+                >
+                  <X size={15} aria-hidden="true" />
+                </button>
+              </div>
+              <label className="cashier-payment-field">
+                Amount (USD)
+                <input
+                  type="number"
+                  min="1"
+                  step="0.01"
+                  inputMode="decimal"
+                  value={cashierPaymentAmount}
+                  onChange={(event) => setCashierPaymentAmount(event.target.value)}
+                  disabled={cashierPaymentBusy}
+                  required
+                />
+              </label>
+              <p className="cashier-payment-conversion">
+                {cashierKesPerUsd
+                  ? `Approx. KES ${Math.round((Number(cashierPaymentAmount) || 0) * cashierKesPerUsd).toLocaleString('en-KE')} at KES ${cashierKesPerUsd.toLocaleString('en-US')} per USD.`
+                  : 'KES/USD rate is not available yet. An administrator must set it before payments can be processed.'}
+              </p>
+              <p className="cashier-payment-note">
+                {cashierPaymentMode === 'deposit'
+                  ? 'An M-Pesa prompt will be sent to the phone number on your account. Your USD balance is credited after MegaPay confirms payment.'
+                  : 'The USD amount is reserved immediately. An administrator will send the KES amount to your registered M-Pesa number.'}
+              </p>
+              <div className="cashier-payment-actions">
+                <button
+                  type="submit"
+                  className="cashier-action-button"
+                  disabled={cashierPaymentBusy || !authUser}
+                >
+                  {cashierPaymentBusy
+                    ? 'Processing…'
+                    : cashierPaymentMode === 'deposit'
+                      ? 'Send M-Pesa prompt'
+                      : 'Request withdrawal'}
+                </button>
+                <button
+                  type="button"
+                  className="admin-button"
+                  onClick={() => setCashierPaymentMode(null)}
+                  disabled={cashierPaymentBusy}
+                >
+                  Cancel
+                </button>
+              </div>
+            </form>
+          )}
+          <section
+            className="cashier-transaction-section"
+            aria-label={cashierWalletIsDemo ? 'Market volatility list' : 'Transaction history'}
+          >
             {!cashierWalletIsDemo && (
               <div className="cashier-section-heading">
                 <h2 id="transaction-history-title">Transaction history</h2>
               </div>
             )}
-            {visibleCashierTransactions.length ? (
+            {cashierTransactionsLoading && !cashierTransactions.length ? (
+              <p className="cashier-message" role="status">Loading transactions…</p>
+            ) : visibleCashierTransactions.length ? (
               <div className="cashier-transaction-list">
                 {visibleCashierTransactions
                   .map((transaction) => (
@@ -1446,11 +1751,23 @@ export function MarketPilotDashboard() {
                   const trendMin = trend.length ? Math.min(...trend) : 0;
                   const trendMax = trend.length ? Math.max(...trend) : 0;
                   const trendRange = trendMax - trendMin;
-                  const trendPoints = trend.map((quote, index) => {
+                  const trendCoordinates = trend.map((quote, index) => {
                     const x = trend.length === 1 ? 0 : index * (56 / (trend.length - 1));
                     const y = trendRange === 0 ? 14 : 26 - ((quote - trendMin) / trendRange) * 24;
-                    return `${x},${y}`;
-                  }).join(' ');
+                    return { x, y };
+                  });
+                  const trendPath = trendCoordinates.length >= 2
+                    ? trendCoordinates.slice(0, -1).reduce((path, point, index) => {
+                      const previous = trendCoordinates[Math.max(0, index - 1)];
+                      const next = trendCoordinates[index + 1];
+                      const following = trendCoordinates[Math.min(trendCoordinates.length - 1, index + 2)];
+                      const controlOneX = point.x + (next.x - previous.x) / 6;
+                      const controlOneY = point.y + (next.y - previous.y) / 6;
+                      const controlTwoX = next.x - (following.x - point.x) / 6;
+                      const controlTwoY = next.y - (following.y - point.y) / 6;
+                      return `${path} C ${controlOneX},${controlOneY} ${controlTwoX},${controlTwoY} ${next.x},${next.y}`;
+                    }, `M ${trendCoordinates[0].x},${trendCoordinates[0].y}`)
+                    : '';
                   const isBullish = trend.length >= 2
                     ? trend.at(-1)! >= trend[0]
                     : true;
@@ -1469,7 +1786,7 @@ export function MarketPilotDashboard() {
                         role="img"
                         aria-label={`${symbol.name} ${trend.length ? (isBullish ? 'bullish' : 'bearish') : 'trend'} trend`}
                       >
-                        {trend.length >= 2 && <polyline points={trendPoints} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />}
+                        {trendPath && <path d={trendPath} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />}
                       </svg>
                       <span className={`cashier-market-status ${marketOpen ? 'is-open' : 'is-closed'}`}>
                         {marketOpen ? 'Market open' : 'Market closed'}
@@ -1631,7 +1948,8 @@ export function MarketPilotDashboard() {
                   theme={theme}
                 />
               </div>
-              <section className="digit-distribution-panel" id="statistics">
+              {kind !== 'rise-fall' && (
+                <section className="digit-distribution-panel" id="statistics">
                 <div className="section-heading">
                   <h2>Digit distribution</h2>
                 </div>
@@ -1673,7 +1991,8 @@ export function MarketPilotDashboard() {
                     )}
                   </div>
                 </div>
-              </section>
+                </section>
+              )}
             </section>
 
             <TradeHistoryPanel
