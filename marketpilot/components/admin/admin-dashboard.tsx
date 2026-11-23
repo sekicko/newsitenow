@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Activity, RefreshCw, ShieldCheck, Users, Wallet } from 'lucide-react';
 import { getSupabaseBrowserClient } from '@/lib/supabase/browser';
@@ -18,10 +18,8 @@ export type AdminDashboardData = {
   activeUsers: number;
   dormantUsers: number;
   depositsToday: number | null;
-  realLossesToday: number;
   totalRealBalance: number;
   realWinRate: number | null;
-  testDemoWinRate: number;
   users: AdminUser[];
 };
 
@@ -45,20 +43,6 @@ export function AdminDashboard({
   const router = useRouter();
   const [actionError, setActionError] = useState('');
   const [signingOut, setSigningOut] = useState(false);
-  const [demoWinRateText, setDemoWinRateText] = useState(String(data.testDemoWinRate));
-  const [savedDemoWinRate, setSavedDemoWinRate] = useState(data.testDemoWinRate);
-  const [rateMessage, setRateMessage] = useState('');
-  const [rateError, setRateError] = useState('');
-  const [savingRate, setSavingRate] = useState(false);
-  const parsedDemoRate = demoWinRateText.trim() === '' ? NaN : Number(demoWinRateText);
-  const displayedDemoRate = Number.isInteger(parsedDemoRate) && parsedDemoRate >= 0 && parsedDemoRate <= 100
-    ? parsedDemoRate
-    : savedDemoWinRate;
-
-  useEffect(() => {
-    setDemoWinRateText(String(data.testDemoWinRate));
-    setSavedDemoWinRate(data.testDemoWinRate);
-  }, [data.testDemoWinRate]);
 
   const signOut = async () => {
     setSigningOut(true);
@@ -70,36 +54,6 @@ export function AdminDashboard({
     } catch (error) {
       setActionError(errorMessage(error));
       setSigningOut(false);
-    }
-  };
-
-  const saveDemoWinRate = async () => {
-    if (!Number.isInteger(parsedDemoRate) || parsedDemoRate < 0 || parsedDemoRate > 100) {
-      setRateError('Enter a whole-number test win chance from 0 to 100.');
-      setRateMessage('');
-      return;
-    }
-
-    setSavingRate(true);
-    setRateError('');
-    setRateMessage('');
-    try {
-      const { data: savedRate, error } = await getSupabaseBrowserClient().rpc(
-        'marketpilot_admin_set_demo_test_win_rate',
-        { p_demo_win_rate: parsedDemoRate },
-      );
-      if (error) throw error;
-      const confirmedRate = typeof savedRate === 'number' ? savedRate : Number(savedRate);
-      if (!Number.isInteger(confirmedRate) || confirmedRate < 0 || confirmedRate > 100) {
-        throw new Error('The saved test win chance was invalid.');
-      }
-      setSavedDemoWinRate(confirmedRate);
-      setDemoWinRateText(String(confirmedRate));
-      setRateMessage('Test win chances saved for new Demo trades.');
-    } catch (error) {
-      setRateError(errorMessage(error));
-    } finally {
-      setSavingRate(false);
     }
   };
 
@@ -151,10 +105,6 @@ export function AdminDashboard({
               <span>Deposits today · real</span>
               <strong>{data.depositsToday === null ? 'Not tracked' : money(data.depositsToday)}</strong>
             </div>
-            <div>
-              <span>Real-account test losses today</span>
-              <strong>{money(data.realLossesToday)}</strong>
-            </div>
             <div className="admin-volume-balance">
               <span>Current real wallet balance</span>
               <strong>{money(data.totalRealBalance)}</strong>
@@ -166,36 +116,11 @@ export function AdminDashboard({
         <article className="admin-card">
           <div className="admin-card-title">
             <span className="admin-card-icon"><Activity size={17} /></span>
-            <h2>Test win-rate settings</h2>
+            <h2>Market-based win rate</h2>
           </div>
-          <label className="admin-rate-label" htmlFor="demo-test-win-rate">Demo test win chance</label>
-          <div className="admin-rate-control">
-            <input
-              id="demo-test-win-rate"
-              type="number"
-              min="0"
-              max="100"
-              step="1"
-              value={demoWinRateText}
-              onChange={(event) => {
-                setDemoWinRateText(event.target.value);
-                setRateError('');
-                setRateMessage('');
-              }}
-            />
-            <span>%</span>
-          </div>
-          <p className="admin-rate-complement">Real-account test chance: <strong>{100 - displayedDemoRate}%</strong></p>
-          <button type="button" className="admin-save-rate" onClick={() => void saveDemoWinRate()} disabled={savingRate}>
-            {savingRate ? 'Saving…' : 'Save test chances'}
-          </button>
-          {rateError && <p className="admin-rate-feedback is-error" role="alert">{rateError}</p>}
-          {rateMessage && <p className="admin-rate-feedback" role="status">{rateMessage}</p>}
+          <strong className="admin-card-total">{data.realWinRate === null ? '—' : `${data.realWinRate.toFixed(1)}%`}</strong>
           <p className="admin-card-note">
-            Per-trade synthetic test odds for new Demo trades; rates are not guaranteed long-run quotas. Market prices and actual exits are unchanged. Real-account trading is disabled.
-          </p>
-          <p className="admin-card-note">
-            Historical market-based real-account win rate: {data.realWinRate === null ? '—' : `${data.realWinRate.toFixed(1)}%`}
+            Historical win rate from closed, market-settled Real-account trades.
           </p>
         </article>
       </section>

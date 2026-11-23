@@ -13,23 +13,19 @@ function isFiniteNumber(value: unknown): value is number {
 
 function parseAdminDashboardData(
   value: unknown,
-  testDemoWinRate: unknown,
   marketRealWinRate: unknown,
 ): AdminDashboardData {
   if (!isRecord(value) || !Array.isArray(value.users)) {
     throw new Error('The administrator report returned invalid data.');
   }
 
-  const { totalUsers, activeUsers, dormantUsers, realLossesToday, totalRealBalance } = value;
+  const { totalUsers, activeUsers, dormantUsers, totalRealBalance } = value;
   const depositsToday = value.depositsToday;
   if (
     !isFiniteNumber(totalUsers) || totalUsers < 0 ||
     !isFiniteNumber(activeUsers) || activeUsers < 0 ||
     !isFiniteNumber(dormantUsers) || dormantUsers < 0 ||
-    !isFiniteNumber(realLossesToday) || realLossesToday < 0 ||
     !isFiniteNumber(totalRealBalance) || totalRealBalance < 0 ||
-    !isFiniteNumber(testDemoWinRate) || !Number.isInteger(testDemoWinRate) ||
-    testDemoWinRate < 0 || testDemoWinRate > 100 ||
     (depositsToday !== null && (!isFiniteNumber(depositsToday) || depositsToday < 0)) ||
     (marketRealWinRate !== null &&
       (!isFiniteNumber(marketRealWinRate) || marketRealWinRate < 0 || marketRealWinRate > 100))
@@ -57,10 +53,8 @@ function parseAdminDashboardData(
     activeUsers,
     dormantUsers,
     depositsToday,
-    realLossesToday,
     totalRealBalance,
     realWinRate: marketRealWinRate,
-    testDemoWinRate,
     users,
   };
 }
@@ -82,17 +76,14 @@ export default async function AdminPage() {
   if (roleError) throw new Error(`Could not verify administrator access: ${roleError.message}`);
   if (!isAdmin) redirect('/');
 
-  const [statsResult, testRateResult, marketRateResult] = await Promise.all([
+  const [statsResult, marketRateResult] = await Promise.all([
     supabase.rpc('marketpilot_admin_dashboard_stats'),
-    supabase.rpc('marketpilot_admin_get_demo_test_win_rate'),
     supabase.rpc('marketpilot_admin_get_market_real_win_rate'),
   ]);
   if (statsResult.error) throw new Error(`Could not load administrator reports: ${statsResult.error.message}`);
-  if (testRateResult.error) throw new Error(`Could not load test outcome settings: ${testRateResult.error.message}`);
   if (marketRateResult.error) throw new Error(`Could not load historical market win rate: ${marketRateResult.error.message}`);
   const dashboardData = parseAdminDashboardData(
     statsResult.data,
-    testRateResult.data,
     marketRateResult.data,
   );
 

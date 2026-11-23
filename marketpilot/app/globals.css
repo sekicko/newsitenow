@@ -397,7 +397,6 @@ select option { color: var(--text); background: var(--surface); }
 .trade-status.open i { width: 5px; height: 5px; animation: pulse 1.6s ease infinite; }
 .trade-status.won { color: var(--green); }
 .trade-status.lost { color: var(--red); }
-.test-outcome-note { color: var(--gold) !important; }
 .empty-history { display: grid; justify-items: center; gap: 6px; padding: 27px 12px 12px; color: var(--text-secondary); font-size: 10px; }
 .empty-history small { color: var(--text-muted); font-size: 9px; }
 .empty-icon { display: grid; width: 31px; height: 31px; margin-bottom: 2px; place-items: center; color: var(--text-muted); border-radius: 9px; background: var(--surface-raised); }
@@ -407,7 +406,6 @@ select option { color: var(--text); background: var(--surface); }
 .practice-panel-header .eyebrow { margin-bottom: 5px; }
 .practice-panel h2 { font-size: 15px; }
 .practice-icon { display: grid; width: 32px; height: 32px; place-items: center; color: var(--blue-bright); border: 1px solid rgba(66, 133, 244, .2); border-radius: 9px; background: rgba(66, 133, 244, .08); }
-.test-simulation-notice { padding: 9px 10px; margin: 10px 0 15px; color: var(--gold); border: 1px solid rgba(230, 182, 92, .2); border-radius: 7px; background: rgba(230, 182, 92, .06); font-size: 9px; line-height: 1.5; }
 .practice-intro { margin: 8px 0 16px; color: var(--text-secondary); font-size: 10px; line-height: 1.55; }
 .form-field { display: grid; gap: 6px; min-width: 0; margin-bottom: 13px; }
 .form-field label { font-size: 9px; }
@@ -904,7 +902,7 @@ select option { color: var(--text); background: var(--surface); }
   .wallet-switcher { width: 126px; height: 30px; }
   .wallet-switcher-trigger { gap: 4px; padding: 0 6px; }
   .wallet-switcher-trigger strong { font-size: 10px; }
-  .wallet-menu { right: auto; left: 0; width: min(250px, calc(100vw - 24px)); }
+  .wallet-menu { right: 0; left: auto; width: min(250px, calc(100vw - 24px)); }
   .market-summary { align-items: center; }
   .market-select-wrap { width: 100%; min-width: 0; }
   .market-select-wrap > label { align-items: flex-start; flex-direction: column; gap: 4px; }
@@ -937,33 +935,92 @@ select option { color: var(--text); background: var(--surface); }
   .chart-style-toggle { padding-right: 6px; padding-left: 6px; font-size: 8px; }
 }
 
-.cashier-page { max-width: 1120px; }
-.cashier-heading { align-items: center; }
+.cashier-page { width: 100%; max-width: none; margin: 0; }
+.cashier-heading { align-items: flex-start; flex-direction: column; gap: 12px; text-align: left; }
 .cashier-heading h1 { margin: 0; font: 750 25px/1.3 'Manrope', sans-serif; letter-spacing: -.6px; }
 .cashier-heading .eyebrow { margin-bottom: 7px; }
-.cashier-currency { padding: 8px 11px; color: var(--blue-bright); border: 1px solid rgba(66, 133, 244, .24); border-radius: 8px; background: rgba(66, 133, 244, .08); font-size: 10px; font-weight: 700; }
-.cashier-message { padding: 12px 14px; margin: 0 0 14px; color: var(--text-secondary); border: 1px solid var(--border); border-radius: 8px; background: var(--surface); font-size: 11px; }
+.cashier-heading .heading-subtitle { max-width: none; margin: 0; line-height: 1.55; }
+.cashier-message { width: 100%; padding: 12px 14px; margin: 0 0 14px; color: var(--text-secondary); border: 1px solid var(--border); border-radius: 8px; background: var(--surface); font-size: 11px; line-height: 1.5; }
 .cashier-message--error { color: var(--red); }
 .cashier-message--success { color: var(--green); }
-.cashier-wallet-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 15px; }
-.cashier-wallet-card { min-width: 0; padding: 0 17px 15px; border: 1px solid var(--border); border-radius: 13px; background: var(--surface); box-shadow: var(--shadow); transition: border-color .16s ease, box-shadow .16s ease; }
-.cashier-wallet-card.is-active { border-color: var(--blue-bright); box-shadow: 0 0 0 2px rgba(66, 133, 244, .12), var(--shadow); }
-.cashier-wallet-choice { display: grid; width: 100%; min-width: 0; gap: 9px; padding: 17px 0 14px; border: 0; background: transparent; text-align: left; cursor: pointer; }
-.cashier-wallet-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.cashier-wallet-grid { display: grid; width: 100%; grid-template-columns: minmax(0, 1fr); gap: 15px; margin: 0; }
+.cashier-wallet-card { min-width: 0; padding: 18px 17px; border: 1px solid var(--border); border-radius: 13px; background: var(--surface); box-shadow: var(--shadow); text-align: left; transition: border-color .16s ease, box-shadow .16s ease; }
+.cashier-wallet-card.is-active {
+  border-color: #08784f;
+  background: #08784f;
+  box-shadow: 0 0 0 2px rgba(8, 120, 79, .14), var(--shadow);
+}
+.cashier-wallet-card.is-active .cashier-wallet-title,
+.cashier-wallet-card.is-active .cashier-wallet-balance { color: #fff; }
+.cashier-wallet-card.is-active .cashier-active-label { color: #d5f5e6; }
+.cashier-wallet-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .cashier-wallet-badge { padding: 5px 7px; border-radius: 5px; font-size: 8px; font-weight: 800; letter-spacing: .8px; }
 .cashier-wallet-badge.is-demo { color: #ffd08a; background: rgba(230, 160, 68, .14); }
 .cashier-wallet-badge.is-real { color: var(--blue-bright); background: rgba(66, 133, 244, .13); }
 .cashier-active-label { color: var(--green); font-size: 8px; font-weight: 800; letter-spacing: .7px; }
-.cashier-wallet-title { color: var(--text-secondary); font-size: 11px; font-weight: 600; }
-.cashier-wallet-balance { color: var(--text); font: 800 clamp(24px, 4vw, 33px)/1.2 'Manrope', sans-serif; font-variant-numeric: tabular-nums; letter-spacing: -.7px; overflow-wrap: anywhere; }
-.cashier-wallet-description { min-height: 30px; color: var(--text-muted); font-size: 10px; line-height: 1.5; }
-.cashier-reset-button { display: inline-flex; min-height: 36px; align-items: center; justify-content: center; gap: 7px; padding: 0 11px; color: #fff; border: 1px solid #3475e4; border-radius: 7px; background: #3475e4; font-size: 10px; font-weight: 700; cursor: pointer; transition: background .16s ease, border-color .16s ease; }
+.cashier-wallet-title { display: block; margin-top: 11px; color: var(--text-secondary); font-size: 11px; font-weight: 600; }
+.cashier-wallet-row { display: flex; min-height: 50px; align-items: center; justify-content: space-between; gap: 16px; margin-top: 6px; }
+.cashier-wallet-balance { display: block; min-width: 0; margin: 0; color: var(--text); font: 800 clamp(24px, 4vw, 33px)/1.2 'Manrope', sans-serif; font-variant-numeric: tabular-nums; letter-spacing: -.7px; overflow-wrap: anywhere; }
+.cashier-reset-button { display: inline-flex; flex: 0 0 auto; max-width: 100%; min-height: 36px; align-items: center; justify-content: flex-start; gap: 7px; padding: 0 11px; color: #fff; border: 1px solid #3475e4; border-radius: 7px; background: #3475e4; font-size: 10px; font-weight: 700; text-align: left; white-space: nowrap; cursor: pointer; transition: background .16s ease, border-color .16s ease; }
 .cashier-reset-button:hover:not(:disabled) { border-color: #2864ce; background: #2864ce; }
 .cashier-reset-button:disabled { opacity: .55; cursor: not-allowed; }
-.cashier-info-card { display: flex; align-items: flex-start; gap: 12px; padding: 16px; margin-top: 17px; border: 1px solid var(--border); border-radius: 11px; background: var(--surface); }
+.cashier-real-actions { display: flex; flex: 0 0 auto; align-items: center; gap: 8px; }
+.cashier-action-button { min-height: 36px; padding: 0 13px; color: #08784f; border: 1px solid #fff; border-radius: 7px; background: #fff; font-size: 10px; font-weight: 800; cursor: pointer; }
+.cashier-action-button:disabled { opacity: .72; cursor: not-allowed; }
+.cashier-info-card { display: flex; width: 100%; align-items: flex-start; gap: 12px; padding: 16px; margin: 17px 0 0; border: 1px solid var(--border); border-radius: 11px; background: var(--surface); }
 .cashier-info-icon { display: grid; flex: 0 0 auto; width: 34px; height: 34px; place-items: center; color: var(--blue-bright); border: 1px solid rgba(66, 133, 244, .2); border-radius: 9px; background: rgba(66, 133, 244, .08); }
-.cashier-info-card strong { color: var(--text); font-size: 11px; }
-.cashier-info-card p { margin: 5px 0 0; color: var(--text-secondary); font-size: 10px; line-height: 1.55; }
+.cashier-info-card p { min-width: 0; margin: 0; color: var(--text-secondary); font-size: 10px; line-height: 1.6; overflow-wrap: anywhere; }
+.cashier-transaction-section { width: 100%; margin-top: 22px; }
+.cashier-section-heading { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+.cashier-section-heading h2 { margin: 0; font: 750 15px/1.3 'Manrope', sans-serif; }
+.cashier-transaction-list, .cashier-market-list { display: grid; width: 100%; border: 1px solid var(--border); border-radius: 11px; background: var(--surface); overflow: hidden; }
+.cashier-transaction-row, .cashier-market-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 12px; min-height: 58px; padding: 10px 12px; border-bottom: 1px solid var(--border); }
+.cashier-transaction-row:last-child, .cashier-market-row:last-child { border-bottom: 0; }
+.cashier-transaction-row > div, .cashier-market-info, .cashier-market-info > div { display: flex; min-width: 0; align-items: center; }
+.cashier-transaction-row > div { align-items: flex-start; flex-direction: column; gap: 3px; }
+.cashier-transaction-row > div strong, .cashier-market-info strong { color: var(--text); font-size: 10px; }
+.cashier-transaction-row > div span, .cashier-market-info > div span { color: var(--text-muted); font-size: 9px; }
+.cashier-transaction-amount { font: 750 11px/1.2 'Manrope', sans-serif; font-variant-numeric: tabular-nums; }
+.cashier-transaction-status { min-width: 72px; padding: 5px 7px; border-radius: 999px; font-size: 8px; font-weight: 800; text-align: center; }
+.cashier-transaction-status.is-completed { color: #08784f; background: rgba(8, 120, 79, .12); }
+.cashier-transaction-status.is-completed.is-deposit { color: #08784f; background: rgba(8, 120, 79, .12); }
+.cashier-transaction-status.is-completed.is-withdrawal { color: #3475e4; background: rgba(52, 117, 228, .12); }
+.cashier-transaction-status.is-pending { color: #b56a12; background: rgba(230, 160, 68, .16); }
+.cashier-transaction-status.is-declined { color: var(--red); background: rgba(201, 48, 44, .12); }
+.cashier-market-row { grid-template-columns: minmax(0, 1fr) 56px auto auto; }
+.cashier-market-info { gap: 9px; }
+.cashier-market-info > div { align-items: flex-start; flex-direction: column; gap: 2px; }
+.cashier-market-icon { display: grid; flex: 0 0 auto; width: 30px; height: 30px; place-items: center; color: var(--blue-bright); border-radius: 8px; background: rgba(66, 133, 244, .1); }
+.cashier-market-trend { width: 56px; height: 28px; }
+.cashier-market-trend.is-bullish { color: var(--green); }
+.cashier-market-trend.is-bearish { color: var(--red); }
+.cashier-market-status { color: var(--text-muted); font-size: 8px; font-weight: 700; white-space: nowrap; }
+.cashier-market-status.is-open { color: var(--green); }
+.cashier-market-status.is-closed { color: var(--red); }
+.cashier-trade-button { min-height: 32px; padding: 0 12px; color: #fff; border: 1px solid #3475e4; border-radius: 7px; background: #3475e4; font-size: 9px; font-weight: 800; cursor: pointer; }
+.cashier-trade-button:hover { border-color: #2864ce; background: #2864ce; }
+.account-settings-page { max-width: 900px; min-height: calc(100vh - 72px); padding: 30px clamp(18px, 4vw, 64px); margin: 0 auto; }
+.account-settings-card { padding: 24px; border: 1px solid var(--border); border-radius: 13px; background: var(--surface); box-shadow: var(--shadow); }
+.account-settings-heading { display: flex; align-items: center; gap: 12px; padding-bottom: 20px; margin-bottom: 20px; border-bottom: 1px solid var(--border); }
+.account-settings-icon { display: grid; flex: 0 0 auto; width: 40px; height: 40px; place-items: center; color: var(--blue-bright); border: 1px solid rgba(66, 133, 244, .2); border-radius: 10px; background: rgba(66, 133, 244, .08); }
+.account-settings-heading .eyebrow { margin-bottom: 4px; }
+.account-settings-heading h1, .account-settings-card > h1 { margin: 0; font: 750 20px/1.3 'Manrope', sans-serif; }
+.account-settings-heading > div > p:last-child, .account-settings-card > p:last-child { margin: 4px 0 0; color: var(--text-secondary); font-size: 10px; }
+.settings-form { display: grid; max-width: 520px; gap: 14px; }
+.settings-field { display: grid; gap: 6px; color: var(--text-secondary); font-size: 10px; font-weight: 700; }
+.settings-field input { width: 100%; min-height: 40px; padding: 0 11px; color: var(--text); border: 1px solid var(--border); border-radius: 7px; outline: none; background: var(--surface-raised); font: inherit; }
+.settings-field input:focus { border-color: var(--blue-bright); box-shadow: 0 0 0 2px rgba(66, 133, 244, .12); }
+.settings-field input:read-only { color: var(--text-muted); }
+.settings-field small { color: var(--text-muted); font-size: 9px; font-weight: 400; }
+.settings-save-button, .settings-reset-button { display: inline-flex; min-height: 38px; align-items: center; justify-content: center; gap: 7px; padding: 0 12px; color: #fff; border: 1px solid #3475e4; border-radius: 7px; background: #3475e4; font-size: 10px; font-weight: 750; cursor: pointer; }
+.settings-save-button { justify-self: start; }
+.settings-save-button:disabled, .settings-reset-button:disabled { opacity: .6; cursor: not-allowed; }
+.settings-password-section { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding-top: 20px; margin-top: 22px; border-top: 1px solid var(--border); }
+.settings-password-section h2 { margin: 0; font: 700 13px/1.3 'Manrope', sans-serif; }
+.settings-password-section p { margin: 4px 0 0; color: var(--text-secondary); font-size: 10px; line-height: 1.5; }
+.settings-message { display: flex; align-items: center; gap: 7px; padding: 10px 12px; margin: 0 0 16px; border: 1px solid var(--border); border-radius: 7px; font-size: 10px; line-height: 1.5; }
+.settings-message.is-success { color: var(--green); background: rgba(8, 120, 79, .08); }
+.settings-message.is-error { color: var(--red); background: rgba(201, 48, 44, .08); }
 
 .admin-page { max-width: 1280px; min-height: 100vh; padding: 32px 24px 48px; margin: 0 auto; }
 .admin-header { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding-bottom: 23px; margin-bottom: 20px; border-bottom: 1px solid var(--border); }
@@ -995,18 +1052,7 @@ select option { color: var(--text); background: var(--surface); }
 .admin-volume-grid span { color: var(--text-secondary); font-size: 10px; }
 .admin-volume-grid strong { font: 700 12px/1.3 'Manrope', sans-serif; text-align: right; }
 .admin-volume-grid .admin-volume-balance { padding-top: 10px; border-top: 1px solid var(--border); }
-.admin-rate-label { display: block; margin: 0 0 6px; color: var(--text-secondary); font-size: 10px; }
-.admin-rate-control { display: flex; align-items: center; gap: 7px; }
-.admin-rate-control input { width: 100%; min-width: 0; height: 36px; padding: 0 9px; color: var(--text); border: 1px solid var(--border); border-radius: 7px; outline: none; background: var(--surface-raised); font-size: 12px; }
-.admin-rate-control input:focus { border-color: var(--blue-bright); }
-.admin-rate-control > span { color: var(--text-secondary); font-weight: 700; }
-.admin-rate-complement { margin: 8px 0 10px; color: var(--text-secondary); font-size: 10px; }
-.admin-rate-complement strong { color: var(--text); }
-.admin-save-rate { min-height: 33px; padding: 0 10px; color: #fff; border: 1px solid #3475e4; border-radius: 7px; background: #3475e4; font-size: 10px; font-weight: 700; cursor: pointer; }
-.admin-save-rate:hover:not(:disabled) { border-color: #2864ce; background: #2864ce; }
-.admin-save-rate:disabled { opacity: .6; cursor: wait; }
-.admin-rate-feedback { margin: 8px 0 0; color: var(--green); font-size: 9px; line-height: 1.45; }
-.admin-rate-feedback.is-error { color: var(--red); }
+
 .admin-list-heading { display: flex; align-items: center; justify-content: space-between; margin-bottom: 13px; }
 .admin-list-heading h2 span { margin-left: 5px; color: var(--text-muted); font: 500 10px 'DM Sans', sans-serif; }
 .admin-user-list { padding-bottom: 10px; }
@@ -1051,11 +1097,18 @@ select option { color: var(--text); background: var(--surface); }
   .admin-metrics { grid-template-columns: minmax(0, 1fr); gap: 10px; }
   .admin-card { padding: 15px; }
   .admin-brand h1 { font-size: 21px; }
-  .cashier-heading { align-items: flex-start; flex-direction: row; gap: 10px; }
+  .cashier-heading { align-items: flex-start; flex-direction: column; gap: 12px; }
   .cashier-heading h1 { font-size: 22px; }
   .cashier-heading .heading-subtitle { margin-top: 5px; }
-  .cashier-currency { padding: 6px 8px; font-size: 9px; white-space: nowrap; }
   .cashier-wallet-grid { grid-template-columns: minmax(0, 1fr); gap: 10px; }
   .cashier-wallet-card { padding-right: 14px; padding-left: 14px; }
   .cashier-wallet-balance { font-size: clamp(24px, 8vw, 32px); }
+  .cashier-wallet-row { flex-wrap: nowrap; gap: 8px; }
+  .cashier-real-actions { width: auto; justify-content: flex-end; gap: 5px; }
+  .cashier-action-button { padding: 0 8px; }
+  .cashier-transaction-row { grid-template-columns: minmax(0, 1fr) auto; }
+  .cashier-market-row { grid-template-columns: minmax(0, 1fr) 56px auto; }
+  .cashier-transaction-status { grid-column: 1 / -1; justify-self: end; }
+  .cashier-market-status { display: none; }
+  .cashier-trade-button { min-width: 52px; }
 }
