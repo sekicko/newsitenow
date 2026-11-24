@@ -21,7 +21,7 @@ export async function POST(request: NextRequest) {
   const admin = getSupabaseAdminClient();
   const { data: transaction, error } = await admin
     .from('marketpilot_transactions')
-    .select('id,user_id,status,transaction_type,amount_kes,megapay_request_id')
+    .select('id,user_id,status,transaction_type,amount_kes,megapay_request_id,created_at')
     .eq('reference', reference)
     .maybeSingle();
   if (error) {
@@ -31,13 +31,9 @@ export async function POST(request: NextRequest) {
   if (!transaction || transaction.transaction_type !== 'deposit') {
     return NextResponse.json({ error: 'Deposit was not found.' }, { status: 404 });
   }
-  if (!transaction.megapay_request_id) {
-    return NextResponse.json({ error: 'MegaPay request is not linked yet.' }, { status: 503 });
-  }
-
   try {
-    await verifyAndSettleMegaPayDeposit(admin, transaction);
-    return NextResponse.json({ status: 'received' });
+    const result = await verifyAndSettleMegaPayDeposit(admin, transaction);
+    return NextResponse.json({ status: result.status });
   } catch (verificationError) {
     console.error('MegaPay callback verification failed.', verificationError);
     return NextResponse.json({ error: 'Callback verification failed.' }, { status: 503 });

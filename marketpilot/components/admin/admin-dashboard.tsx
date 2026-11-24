@@ -18,7 +18,7 @@ export type AdminPaymentTransaction = {
   username: string;
   email: string;
   type: 'deposit' | 'withdrawal';
-  status: 'pending' | 'completed' | 'declined';
+  status: 'pending' | 'completed' | 'declined' | 'failed';
   amountUsd: number;
   amountKes: number;
   phone: string;
@@ -231,7 +231,7 @@ export function AdminDashboard({
                 <th scope="col">Type</th>
                 <th scope="col">USD</th>
                 <th scope="col">KES</th>
-                <th scope="col">M-Pesa number</th>
+                <th scope="col">M-Pesa recipient</th>
                 <th scope="col">Status</th>
                 <th scope="col">Receipt / actions</th>
               </tr>
@@ -244,7 +244,13 @@ export function AdminDashboard({
                   <td>{money(transaction.amountUsd)}</td>
                   <td>KES {transaction.amountKes.toLocaleString('en-KE')}</td>
                   <td>{transaction.phone}</td>
-                  <td><span className={`admin-payment-status is-${transaction.status}`}>{transaction.status.charAt(0).toUpperCase() + transaction.status.slice(1)}</span></td>
+                  <td>
+                    <span className={`admin-payment-status is-${transaction.type === 'deposit' && transaction.status === 'pending' ? 'processing' : transaction.status}`}>
+                      {transaction.type === 'deposit' && transaction.status === 'pending'
+                        ? 'Awaiting confirmation'
+                        : transaction.status.charAt(0).toUpperCase() + transaction.status.slice(1)}
+                    </span>
+                  </td>
                   <td>
                     {transaction.type === 'deposit' ? (
                       transaction.megapayReceipt ?? transaction.reference
