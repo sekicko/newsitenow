@@ -9,6 +9,7 @@ type PendingDeposit = {
   status: string;
   amount_kes: number | string;
   megapay_request_id: string | null;
+  reference: string;
   created_at: string;
 };
 
@@ -77,27 +78,25 @@ export async function verifyAndSettleMegaPayDeposit(
 
   const hasCompletedStatus = ['completed', 'complete', 'success', 'successful'].includes(providerStatus);
   const hasSuccessfulTransactionCode = transactionCode === '0' || transactionCode === 0;
+  const hasValidTransactionCode = transactionCode === undefined || transactionCode === null || hasSuccessfulTransactionCode;
   const hasTransactionId = typeof (result.TransactionID ?? result.transaction_id) === 'string';
   const isExplicitlyPending = ['pending', 'processing', 'initiated', 'queued', 'in progress'].includes(providerStatus);
   if (
-    hasCompletedStatus ||
+    (hasCompletedStatus && hasValidTransactionCode) ||
     (!isExplicitlyPending && hasSuccessfulTransactionCode && hasTransactionId)
   ) {
     const amountKes = numberValue(result.TransactionAmount ?? result.transaction_amount);
     const providerTransactionId = result.TransactionID ?? result.transaction_id;
     const receipt = result.TransactionReceipt ?? result.transaction_receipt;
     const phone = result.Msisdn ?? result.msisdn;
-    const reference = result.TransactionReference ?? result.transaction_reference;
     if (
       amountKes === null ||
-      (!hasCompletedStatus && !hasSuccessfulTransactionCode) ||
+      (!(hasCompletedStatus && hasValidTransactionCode) && !hasSuccessfulTransactionCode) ||
       typeof providerTransactionId !== 'string' ||
       providerTransactionId.trim().length < 1 ||
       providerTransactionId.length > 200 ||
       typeof phone !== 'string' ||
-      phone.trim().length < 1 ||
-      typeof reference !== 'string' ||
-      reference.trim().length < 1
+      phone.trim().length < 1
     ) {
       throw new Error('MegaPay completion response is missing verified transaction details.');
     }
@@ -108,7 +107,7 @@ export async function verifyAndSettleMegaPayDeposit(
       p_receipt: typeof receipt === 'string' ? receipt : null,
       p_amount_kes: amountKes,
       p_msisdn: phone,
-      p_reference: reference,
+      p_reference: transaction.reference,
     });
     if (error) throw new Error(`Deposit could not be credited: ${error.message}`);
     if (!isRecord(data) || data.status !== 'completed') {
