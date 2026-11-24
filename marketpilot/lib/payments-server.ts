@@ -73,17 +73,24 @@ export async function verifyAndSettleMegaPayDeposit(
   const providerStatus = typeof rawStatus === 'string'
     ? rawStatus.trim().toLowerCase()
     : '';
+  const transactionCode = result.TransactionCode ?? result.transaction_code;
 
-  if (['completed', 'complete', 'success', 'successful'].includes(providerStatus)) {
+  const hasCompletedStatus = ['completed', 'complete', 'success', 'successful'].includes(providerStatus);
+  const hasSuccessfulTransactionCode = transactionCode === '0' || transactionCode === 0;
+  const hasTransactionId = typeof (result.TransactionID ?? result.transaction_id) === 'string';
+  const isExplicitlyPending = ['pending', 'processing', 'initiated', 'queued', 'in progress'].includes(providerStatus);
+  if (
+    hasCompletedStatus ||
+    (!isExplicitlyPending && hasSuccessfulTransactionCode && hasTransactionId)
+  ) {
     const amountKes = numberValue(result.TransactionAmount ?? result.transaction_amount);
-    const transactionCode = result.TransactionCode ?? result.transaction_code;
     const providerTransactionId = result.TransactionID ?? result.transaction_id;
     const receipt = result.TransactionReceipt ?? result.transaction_receipt;
     const phone = result.Msisdn ?? result.msisdn;
     const reference = result.TransactionReference ?? result.transaction_reference;
     if (
       amountKes === null ||
-      (transactionCode !== '0' && transactionCode !== 0) ||
+      (!hasCompletedStatus && !hasSuccessfulTransactionCode) ||
       typeof providerTransactionId !== 'string' ||
       providerTransactionId.trim().length < 1 ||
       providerTransactionId.length > 200 ||
