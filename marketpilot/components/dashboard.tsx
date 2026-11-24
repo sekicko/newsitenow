@@ -74,7 +74,7 @@ type CashierTransaction = {
   id: string;
   accountType: WalletAccount;
   type: 'deposit' | 'withdrawal';
-  status: 'completed' | 'pending' | 'declined';
+  status: 'completed' | 'pending' | 'declined' | 'failed';
   amount: number;
   createdAt: string;
 };
@@ -99,7 +99,7 @@ async function loadCashierTransactions(userId: string): Promise<CashierTransacti
     if (
       typeof row.id !== 'string' ||
       (row.transaction_type !== 'deposit' && row.transaction_type !== 'withdrawal') ||
-      (row.status !== 'completed' && row.status !== 'pending' && row.status !== 'declined') ||
+      (row.status !== 'completed' && row.status !== 'pending' && row.status !== 'declined' && row.status !== 'failed') ||
       amount === null ||
       typeof row.created_at !== 'string'
     ) return [];
@@ -356,6 +356,7 @@ export function MarketPilotDashboard() {
   const [cashierTransactionsOwner, setCashierTransactionsOwner] = useState<string | null>(null);
   const [cashierTransactionsLoading, setCashierTransactionsLoading] = useState(false);
   const [cashierDepositSuccess, setCashierDepositSuccess] = useState<{ transactionId: string; amount: number } | null>(null);
+  const [cashierDepositConfirmation, setCashierDepositConfirmation] = useState<'pending' | 'failed' | null>(null);
   const [cashierKesPerUsd, setCashierKesPerUsd] = useState<number | null>(null);
   const [cashierPaymentMode, setCashierPaymentMode] = useState<'deposit' | 'withdrawal' | null>(null);
   const [cashierPaymentAmount, setCashierPaymentAmount] = useState('10');
@@ -411,7 +412,21 @@ export function MarketPilotDashboard() {
 
   useEffect(() => {
     setCashierDepositSuccess(null);
+    setCashierDepositConfirmation(null);
   }, [authUser?.id]);
+
+  useEffect(() => {
+    if (
+      cashierPaymentMode !== 'deposit' ||
+      (!cashierDepositSuccess && cashierDepositConfirmation !== 'failed')
+    ) return;
+    const timeoutId = window.setTimeout(() => {
+      setCashierPaymentMode(null);
+      setCashierDepositSuccess(null);
+      setCashierDepositConfirmation(null);
+    }, 3_000);
+    return () => window.clearTimeout(timeoutId);
+  }, [cashierDepositConfirmation, cashierDepositSuccess, cashierPaymentMode]);
 
   const selectedMarket = market.symbols.find((item) => item.symbol === market.selectedSymbol);
   const latestLiveTick = [...market.liveTicks].reverse().find((tick) => tick.symbol === market.selectedSymbol) ?? null;
@@ -684,7 +699,7 @@ export function MarketPilotDashboard() {
   }, [cashierPaymentBusy, cashierPaymentMode]);
 
   useEffect(() => {
-    if (cashierPaymentMode !== 'deposit' || !authUser?.id) {
+    if (!cashierPaymentMode || !authUser?.id) {
       setCashierPaymentPhoneLoading(false);
       return;
     }
@@ -747,7 +762,7 @@ export function MarketPilotDashboard() {
     : '';
 
   useEffect(() => {
-    if (!authUser?.id || currentPage !== 'cashier' || !pendingDepositIds) return;
+    if (!authUser?.id || !pendingDepositIds) return;
     const userId = authUser.id;
     const transactionIds = pendingDepositIds.split(',');
     const checkPendingDeposits = async () => {
@@ -770,11 +785,12 @@ export function MarketPilotDashboard() {
           ) return;
           const resultRecord = result as Record<string, unknown>;
           const status = resultRecord.status;
-          if (status !== 'completed' && status !== 'declined') return;
+          if (status !== 'completed' && status !== 'failed') return;
           setCashierTransactions((current) => current.map((transaction) =>
             transaction.id === transactionId ? { ...transaction, status } : transaction,
           ));
           if (status === 'completed') {
+            setCashierDepositConfirmation(null);
             const balance = storedNumber(resultRecord.balance);
             if (balance !== null && authUserIdRef.current === userId) {
               setWalletBalances((current) => current ? { ...current, real: balance } : current);
@@ -783,6 +799,8 @@ export function MarketPilotDashboard() {
             if (amount !== null && amount > 0) {
               setCashierDepositSuccess({ transactionId, amount });
             }
+          } else {
+            setCashierDepositConfirmation('failed');
           }
         } catch {
           // A later poll can recover from temporary network failures.
@@ -795,7 +813,7 @@ export function MarketPilotDashboard() {
     void checkPendingDeposits();
     const intervalId = window.setInterval(() => void checkPendingDeposits(), 12_000);
     return () => window.clearInterval(intervalId);
-  }, [authUser?.id, currentPage, pendingDepositIds]);
+  }, [authUser?.id, pendingDepositIds]);
 
   useEffect(() => {
     if (!availableChoices.length) return;
@@ -1164,6 +1182,10 @@ export function MarketPilotDashboard() {
       setCashierError('Enter the phone number for the payment prompt.');
       return;
     }
+    if (cashierPaymentMode === 'withdrawal' && !cashierPaymentPhone.trim()) {
+      setCashierError('Enter the phone number that will receive the withdrawal.');
+      return;
+    }
 
     const userId = authUser.id;
     const mode = cashierPaymentMode;
@@ -1176,7 +1198,7 @@ export function MarketPilotDashboard() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           amountUsd,
-          ...(mode === 'deposit' ? { phone: cashierPaymentPhone.trim() } : {}),
+          phone: cashierPaymentPhone.trim(),
         }),
       });
       const result: unknown = await response.json();
@@ -1220,9 +1242,13 @@ export function MarketPilotDashboard() {
         setWalletBalances((current) => current ? { ...current, real: balance } : current);
       }
 
-      setCashierPaymentMode(null);
+      if (mode === 'deposit') {
+        setCashierDepositConfirmation('pending');
+      } else {
+        setCashierPaymentMode(null);
+      }
       setCashierMessage(mode === 'deposit'
-        ? 'Deposit pending. We’ll update your transaction history once it is confirmed.'
+        ? ''
         : 'Withdrawal requested. The amount is reserved while an administrator processes it.');
       try {
         const transactions = await loadCashierTransactions(userId);
@@ -1714,6 +1740,7 @@ export function MarketPilotDashboard() {
                         setCashierError('');
                         setCashierMessage('');
                         setCashierDepositSuccess(null);
+                        setCashierDepositConfirmation(null);
                         setCashierPaymentMode('deposit');
                       }}
                       disabled={!authUser || cashierPaymentBusy}
@@ -1726,6 +1753,8 @@ export function MarketPilotDashboard() {
                       onClick={() => {
                         setCashierError('');
                         setCashierMessage('');
+                        setCashierDepositSuccess(null);
+                        setCashierDepositConfirmation(null);
                         setCashierPaymentMode('withdrawal');
                       }}
                       disabled={!authUser || cashierPaymentBusy}
@@ -1737,31 +1766,6 @@ export function MarketPilotDashboard() {
               </div>
             </article>
           </div>
-          {!cashierWalletIsDemo && (
-            <div className="cashier-deposit-notices" aria-live="polite">
-              {visibleCashierTransactions
-                .filter((transaction) => transaction.type === 'deposit' && transaction.status === 'pending')
-                .map((transaction) => (
-                  <article className="cashier-deposit-notice is-pending" key={transaction.id}>
-                    <span className="cashier-deposit-spinner" aria-hidden="true" />
-                    <div>
-                      <strong>Pending deposit!</strong>
-                      <p>Waiting for confirmation of {formatMoney(transaction.amount)}. Your balance will update when confirmed.</p>
-                    </div>
-                  </article>
-                ))}
-              {cashierDepositSuccess && (
-                <article className="cashier-deposit-notice is-success" key={cashierDepositSuccess.transactionId}>
-                  <div className="cashier-deposit-success-mark" aria-hidden="true">✓</div>
-                  <div>
-                    <strong>Success</strong>
-                    <p>Funds added to your real trading wallet</p>
-                    <b>{formatMoney(cashierDepositSuccess.amount)} USD credited</b>
-                  </div>
-                </article>
-              )}
-            </div>
-          )}
           {cashierWalletIsDemo && (
             <aside className="cashier-info-card">
               <span className="cashier-info-icon"><Wallet size={19} aria-hidden="true" /></span>
@@ -1778,7 +1782,55 @@ export function MarketPilotDashboard() {
                   if (!cashierPaymentBusy) setCashierPaymentMode(null);
                 }}
               />
-              <form
+                {cashierPaymentMode === 'deposit' && (cashierDepositConfirmation || cashierDepositSuccess) ? (
+                  <section
+                    className={`cashier-payment-form cashier-deposit-confirmation${cashierDepositSuccess ? ' is-success' : cashierDepositConfirmation === 'failed' ? ' is-failed' : ' is-pending'}`}
+                    role="dialog"
+                    aria-modal="true"
+                    aria-labelledby="cashier-deposit-confirmation-title"
+                    aria-live="assertive"
+                  >
+                    <div className="cashier-payment-heading">
+                      <strong id="cashier-deposit-confirmation-title">Deposit confirmation</strong>
+                      <button
+                        type="button"
+                        className="cashier-payment-close"
+                        onClick={() => setCashierPaymentMode(null)}
+                        aria-label="Close deposit confirmation"
+                      >
+                        <X size={15} aria-hidden="true" />
+                      </button>
+                    </div>
+                    {cashierDepositSuccess ? (
+                      <article className="cashier-deposit-notice is-success">
+                        <div className="cashier-deposit-success-mark" aria-hidden="true">✓</div>
+                        <div>
+                          <strong>Success</strong>
+                          <p>Funds added to your real trading wallet</p>
+                          <b>{formatMoney(cashierDepositSuccess.amount)} USD credited</b>
+                        </div>
+                      </article>
+                    ) : cashierDepositConfirmation === 'failed' ? (
+                      <article className="cashier-deposit-notice is-failed">
+                        <div className="cashier-deposit-failure-mark" aria-hidden="true">!</div>
+                        <div>
+                          <strong>Failed</strong>
+                          <p>The deposit was not confirmed. No funds were added to your real trading wallet.</p>
+                        </div>
+                      </article>
+                    ) : (
+                      <article className="cashier-deposit-notice is-pending">
+                        <span className="cashier-deposit-spinner" aria-hidden="true" />
+                        <div>
+                          <strong>Waiting for confirmation…</strong>
+                          <p>We’re checking your deposit. Your real balance will update as soon as it is confirmed.</p>
+                          <b>{formatMoney(Number(cashierPaymentAmount))} USD</b>
+                        </div>
+                      </article>
+                    )}
+                  </section>
+                ) : (
+                <form
                 className="cashier-payment-form"
                 role="dialog"
                 aria-modal="true"
@@ -1812,36 +1864,34 @@ export function MarketPilotDashboard() {
                   />
                 </label>
                 {cashierPaymentMode === 'deposit' && (
-                  <>
-                    <div className="cashier-amount-quick-picks" role="group" aria-label="Choose a deposit amount">
-                      {[5, 10, 20, 50, 100, 200, 500].map((amount) => (
-                        <button
-                          key={amount}
-                          type="button"
-                          className={Number(cashierPaymentAmount) === amount ? 'is-selected' : ''}
-                          onClick={() => setCashierPaymentAmount(String(amount))}
-                          disabled={cashierPaymentBusy}
-                        >
-                          ${amount}
-                        </button>
-                      ))}
-                    </div>
-                    <label className="cashier-payment-field">
-                      M-Pesa phone number
-                      <input
-                        type="tel"
-                        autoComplete="tel"
-                        inputMode="tel"
-                        value={cashierPaymentPhone}
-                        onChange={(event) => setCashierPaymentPhone(event.target.value)}
-                        disabled={cashierPaymentBusy || cashierPaymentPhoneLoading}
-                        placeholder={cashierPaymentPhoneLoading ? 'Loading account phone…' : '+254…'}
-                        required
-                      />
-                      <small>Prefilled from your account. Edit it if you want the prompt sent to another number.</small>
-                    </label>
-                  </>
+                  <div className="cashier-amount-quick-picks" role="group" aria-label="Choose a deposit amount">
+                    {[5, 10, 20, 50, 100, 200, 500].map((amount) => (
+                      <button
+                        key={amount}
+                        type="button"
+                        className={Number(cashierPaymentAmount) === amount ? 'is-selected' : ''}
+                        onClick={() => setCashierPaymentAmount(String(amount))}
+                        disabled={cashierPaymentBusy}
+                      >
+                        ${amount}
+                      </button>
+                    ))}
+                  </div>
                 )}
+                <label className="cashier-payment-field">
+                  M-Pesa phone number receiving {cashierPaymentMode === 'deposit' ? 'the prompt' : 'the withdrawal'}
+                  <input
+                    type="tel"
+                    autoComplete="tel"
+                    inputMode="tel"
+                    value={cashierPaymentPhone}
+                    onChange={(event) => setCashierPaymentPhone(event.target.value)}
+                    disabled={cashierPaymentBusy || cashierPaymentPhoneLoading}
+                    placeholder={cashierPaymentPhoneLoading ? 'Loading account phone…' : '+254…'}
+                    required
+                  />
+                  <small>Prefilled from your account phone. Edit it to use a different number.</small>
+                </label>
                 <p className="cashier-payment-conversion">
                   {cashierKesPerUsd
                     ? `Approx. KES ${Math.round((Number(cashierPaymentAmount) || 0) * cashierKesPerUsd).toLocaleString('en-KE')} at KES ${cashierKesPerUsd.toLocaleString('en-US')} per USD.`
@@ -1850,18 +1900,18 @@ export function MarketPilotDashboard() {
                 <p className="cashier-payment-note">
                   {cashierPaymentMode === 'deposit'
                     ? 'A payment prompt will be sent to the phone number entered above. Your USD balance is credited after payment confirmation.'
-                    : 'The USD amount is reserved immediately. An administrator will send the KES amount to your registered M-Pesa number.'}
+                    : 'The USD amount is reserved immediately. An administrator must approve your request and send the KES amount to this phone number.'}
                 </p>
                 <div className="cashier-payment-actions">
                   <button
                     type="submit"
                     className="cashier-action-button"
-                    disabled={cashierPaymentBusy || !authUser || (cashierPaymentMode === 'deposit' && cashierPaymentPhoneLoading)}
+                    disabled={cashierPaymentBusy || !authUser || cashierPaymentPhoneLoading}
                   >
                     {cashierPaymentBusy
                       ? 'Processing…'
                       : cashierPaymentMode === 'deposit'
-                        ? 'Send M-Pesa prompt'
+                        ? 'Send STK'
                         : 'Request withdrawal'}
                   </button>
                   <button
@@ -1874,6 +1924,7 @@ export function MarketPilotDashboard() {
                   </button>
                 </div>
               </form>
+              )}
             </div>
           )}
           <section
@@ -1899,9 +1950,13 @@ export function MarketPilotDashboard() {
                       <strong className="cashier-transaction-amount">
                         {transaction.type === 'deposit' ? '+' : '-'}{formatMoney(transaction.amount)}
                       </strong>
-                      <span className={`cashier-transaction-status is-${transaction.status}${transaction.status === 'completed' ? ` is-${transaction.type}` : ''}`}>
-                        {transaction.status.charAt(0).toUpperCase() + transaction.status.slice(1)}
-                      </span>
+                      {transaction.type === 'deposit' && transaction.status === 'pending' ? (
+                        <span className="cashier-transaction-status is-processing">Awaiting confirmation</span>
+                      ) : (
+                        <span className={`cashier-transaction-status is-${transaction.status}${transaction.status === 'completed' ? ` is-${transaction.type}` : ''}`}>
+                          {transaction.status.charAt(0).toUpperCase() + transaction.status.slice(1)}
+                        </span>
+                      )}
                     </article>
                   ))}
               </div>

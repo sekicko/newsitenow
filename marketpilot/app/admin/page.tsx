@@ -81,7 +81,7 @@ function parseAdminDashboardData(
       typeof username !== 'string' ||
       typeof email !== 'string' ||
       (type !== 'deposit' && type !== 'withdrawal') ||
-      (status !== 'pending' && status !== 'completed' && status !== 'declined') ||
+      (status !== 'pending' && status !== 'completed' && status !== 'declined' && status !== 'failed') ||
       !isFiniteNumber(amountUsd) || amountUsd <= 0 ||
       !isFiniteNumber(amountKes) || amountKes <= 0 ||
       typeof phone !== 'string' ||

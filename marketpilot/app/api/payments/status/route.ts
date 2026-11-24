@@ -29,7 +29,7 @@ export async function POST(request: NextRequest) {
   const admin = getSupabaseAdminClient();
   const { data: transaction, error: transactionError } = await admin
     .from('marketpilot_transactions')
-    .select('id,user_id,status,transaction_type,amount_kes,amount_usd,megapay_request_id')
+    .select('id,user_id,status,transaction_type,amount_kes,amount_usd,megapay_request_id,created_at')
     .eq('id', transactionId)
     .eq('user_id', user.id)
     .maybeSingle();

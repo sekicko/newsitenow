@@ -10,7 +10,7 @@ export type PaymentAdminDatabase = {
           id: string;
           user_id: string;
           transaction_type: 'deposit' | 'withdrawal';
-          status: 'pending' | 'completed' | 'declined';
+          status: 'pending' | 'completed' | 'declined' | 'failed';
           amount_usd: number;
           amount_kes: number;
           phone_e164: string;
@@ -53,6 +53,10 @@ export type PaymentAdminDatabase = {
         Returns: Json;
       };
       marketpilot_payment_mark_deposit_declined: {
+        Args: { p_transaction_id: string; p_reason: string };
+        Returns: undefined;
+      };
+      marketpilot_payment_mark_deposit_failed: {
         Args: { p_transaction_id: string; p_reason: string };
         Returns: undefined;
       };

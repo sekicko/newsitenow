@@ -1,4 +1,5 @@
 import { NextResponse, type NextRequest } from 'next/server';
+import { parsePhoneNumberFromString } from 'libphonenumber-js';
 import { createSupabaseServerClient } from '@/lib/supabase/server';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -21,6 +22,11 @@ export async function POST(request: NextRequest) {
   if (typeof amountUsd !== 'number' || !Number.isFinite(amountUsd) || amountUsd < 1) {
     return NextResponse.json({ error: 'Withdrawal amount must be at least $1.00.' }, { status: 400 });
   }
+  const phoneInput = isRecord(body) ? body.phone : null;
+  const phone = typeof phoneInput === 'string' ? parsePhoneNumberFromString(phoneInput.trim()) : undefined;
+  if (!phone?.isValid()) {
+    return NextResponse.json({ error: 'Enter a valid recipient phone number in international format, including its +country code.' }, { status: 400 });
+  }
 
   const supabase = await createSupabaseServerClient();
   const { data: { user }, error: userError } = await supabase.auth.getUser();
@@ -30,6 +36,7 @@ export async function POST(request: NextRequest) {
 
   const { data, error } = await supabase.rpc('marketpilot_create_withdrawal', {
     p_amount_usd: amountUsd,
+    p_phone_e164: phone.number,
   });
   if (error) return NextResponse.json({ error: error.message }, { status: 400 });
   if (!isRecord(data) || typeof data.balance !== 'number') {
