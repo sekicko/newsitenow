@@ -756,6 +756,7 @@ export function MarketPilotDashboard() {
   const pendingDepositIds = cashierTransactionsOwner === authUser?.id
     ? cashierTransactions
       .filter((transaction) => transaction.type === 'deposit' && transaction.status === 'pending')
+      .sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt))
       .map((transaction) => transaction.id)
       .slice(0, 5)
       .join(',')
