@@ -34,6 +34,14 @@ function getRequestId(result: Record<string, unknown>): string | null {
   return requestId ?? null;
 }
 
+function getTransactionStatusResponse(result: Record<string, unknown>): Record<string, unknown> {
+  for (const key of ['data', 'transaction', 'result']) {
+    const nested = result[key];
+    if (isRecord(nested)) return nested;
+  }
+  return result;
+}
+
 async function postMegaPay(
   endpoint: 'initiatestk' | 'transactionstatus',
   body: Record<string, unknown>,
@@ -91,7 +99,13 @@ export async function initiateMegaPayStk(input: {
     throw new MegaPayRejectedError(message);
   }
 
-  if (result.success !== '200' && result.success !== 200) {
+  const initiationStatus = typeof result.status === 'string' ? result.status.trim().toLowerCase() : '';
+  if (
+    result.success !== '200' &&
+    result.success !== 200 &&
+    initiationStatus !== 'success' &&
+    initiationStatus !== 'successful'
+  ) {
     const message = typeof result.massage === 'string'
       ? result.massage
       : 'The payment request needs status confirmation.';
@@ -103,9 +117,10 @@ export async function initiateMegaPayStk(input: {
 
 export async function getMegaPayTransactionStatus(requestId: string) {
   const credentials = getCredentials();
-  return postMegaPay('transactionstatus', {
+  const result = await postMegaPay('transactionstatus', {
     api_key: credentials.apiKey,
     email: credentials.email,
     transaction_request_id: requestId,
   });
+  return getTransactionStatusResponse(result);
 }

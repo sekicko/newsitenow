@@ -811,7 +811,7 @@ export function MarketPilotDashboard() {
     };
 
     void checkPendingDeposits();
-    const intervalId = window.setInterval(() => void checkPendingDeposits(), 12_000);
+    const intervalId = window.setInterval(() => void checkPendingDeposits(), 3_000);
     return () => window.clearInterval(intervalId);
   }, [authUser?.id, pendingDepositIds]);
 
