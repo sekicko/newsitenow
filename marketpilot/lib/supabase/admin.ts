@@ -13,8 +13,9 @@ export function getSupabaseServerKey(): string | null {
 export function getSupabaseAdminClient(): PaymentAdminClient {
   const url = process.env.SUPABASE_URL?.trim();
   const secretKey = getSupabaseServerKey();
-  if (!url || !secretKey) {
-    throw new Error('Set SUPABASE_URL and SUPABASE_SECRET_KEY or SUPABASE_SERVICE_ROLE_KEY for server-side Supabase services.');
+  if (!url) throw new Error('SUPABASE_URL is missing from this deployment environment.');
+  if (!secretKey) {
+    throw new Error('Set SUPABASE_SECRET_KEY or SUPABASE_SERVICE_ROLE_KEY for server-side Supabase services.');
   }
 
   adminClient ??= createClient<PaymentAdminDatabase>(url, secretKey, {
