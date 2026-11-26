@@ -44,11 +44,19 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Payment callback is being retried.' }, { status: 503 });
   }
 
-  const responseCode = body.ResponseCode;
-  if (responseCode !== 0 && responseCode !== '0') {
+  const rawResponseCode = body.ResponseCode;
+  const responseCode = typeof rawResponseCode === 'number' && Number.isInteger(rawResponseCode)
+    ? rawResponseCode
+    : typeof rawResponseCode === 'string' && /^-?\d+$/.test(rawResponseCode.trim())
+      ? Number(rawResponseCode)
+      : null;
+  if (responseCode === null) {
+    return NextResponse.json({ error: 'Callback response code is missing or invalid.' }, { status: 400 });
+  }
+  if (responseCode !== 0) {
     const description = typeof body.ResponseDescription === 'string'
       ? body.ResponseDescription
-      : 'The payment provider reported an unsuccessful transaction.';
+      : `The payment provider reported an unsuccessful transaction (code ${responseCode}).`;
     const { error: declineError } = await admin.rpc('marketpilot_payment_mark_deposit_failed', {
       p_transaction_id: transaction.id,
       p_reason: description,
