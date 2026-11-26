@@ -4,44 +4,46 @@ import { getSupabaseAdminClient } from '@/lib/supabase/admin';
 import { createSupabaseServerClient } from '@/lib/supabase/server';
 
 export async function POST(request: NextRequest) {
-  const origin = request.headers.get('origin');
-  if (origin && origin !== request.nextUrl.origin) {
-    return NextResponse.json({ error: 'This payment request is not allowed.' }, { status: 403 });
-  }
-
-  let body: unknown;
+  let transactionId: string | null = null;
   try {
-    body = await request.json();
-  } catch {
-    return NextResponse.json({ error: 'A valid transaction ID is required.' }, { status: 400 });
-  }
-  const transactionId = body && typeof body === 'object' && !Array.isArray(body)
-    ? (body as Record<string, unknown>).transactionId
-    : null;
-  if (typeof transactionId !== 'string' || !/^[0-9a-f-]{36}$/i.test(transactionId)) {
-    return NextResponse.json({ error: 'A valid transaction ID is required.' }, { status: 400 });
-  }
+    const origin = request.headers.get('origin');
+    if (origin && origin !== request.nextUrl.origin) {
+      return NextResponse.json({ error: 'This payment request is not allowed.' }, { status: 403 });
+    }
 
-  const supabase = await createSupabaseServerClient();
-  const { data: { user }, error: userError } = await supabase.auth.getUser();
-  if (userError || !user) return NextResponse.json({ error: 'Sign in to check this payment.' }, { status: 401 });
+    let body: unknown;
+    try {
+      body = await request.json();
+    } catch {
+      return NextResponse.json({ error: 'A valid transaction ID is required.' }, { status: 400 });
+    }
+    const parsedTransactionId = body && typeof body === 'object' && !Array.isArray(body)
+      ? (body as Record<string, unknown>).transactionId
+      : null;
+    if (typeof parsedTransactionId !== 'string' || !/^[0-9a-f-]{36}$/i.test(parsedTransactionId)) {
+      return NextResponse.json({ error: 'A valid transaction ID is required.' }, { status: 400 });
+    }
+    transactionId = parsedTransactionId;
 
-  const admin = getSupabaseAdminClient();
-  const { data: transaction, error: transactionError } = await admin
-    .from('marketpilot_transactions')
-    .select('id,user_id,status,transaction_type,amount_kes,amount_usd,megapay_request_id,reference,created_at')
-    .eq('id', transactionId)
-    .eq('user_id', user.id)
-    .maybeSingle();
-  if (transactionError) {
-    console.error('MarketPilot payment lookup failed.', transactionError.message);
-    return NextResponse.json({ error: 'Payment status is temporarily unavailable.' }, { status: 503 });
-  }
-  if (!transaction || transaction.transaction_type !== 'deposit') {
-    return NextResponse.json({ error: 'Deposit was not found.' }, { status: 404 });
-  }
+    const supabase = await createSupabaseServerClient();
+    const { data: { user }, error: userError } = await supabase.auth.getUser();
+    if (userError || !user) return NextResponse.json({ error: 'Sign in to check this payment.' }, { status: 401 });
 
-  try {
+    const admin = getSupabaseAdminClient();
+    const { data: transaction, error: transactionError } = await admin
+      .from('marketpilot_transactions')
+      .select('id,user_id,status,transaction_type,amount_kes,amount_usd,megapay_request_id,reference,created_at')
+      .eq('id', transactionId)
+      .eq('user_id', user.id)
+      .maybeSingle();
+    if (transactionError) {
+      console.error('MarketPilot payment lookup failed.', transactionError.message);
+      return NextResponse.json({ error: 'Payment status is temporarily unavailable.' }, { status: 503 });
+    }
+    if (!transaction || transaction.transaction_type !== 'deposit') {
+      return NextResponse.json({ error: 'Deposit was not found.' }, { status: 404 });
+    }
+
     const result = await verifyAndSettleMegaPayDeposit(admin, transaction);
     if (result.status !== 'completed') return NextResponse.json(result);
     let balance = result.balance;
@@ -65,10 +67,10 @@ export async function POST(request: NextRequest) {
       ...(balance === undefined ? {} : { balance }),
     });
   } catch (error) {
-    console.error('MegaPay payment verification failed.', error);
+    console.error('Deposit status route failed.', { transactionId, error });
     return NextResponse.json(
-      { error: 'Deposit confirmation could not be checked. The app will retry automatically.' },
-      { status: 502 },
+      { error: 'Deposit confirmation is temporarily unavailable. The app will retry automatically.' },
+      { status: 503 },
     );
   }
 }

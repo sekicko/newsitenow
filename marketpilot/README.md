@@ -20,6 +20,8 @@ The market picker is restricted to the ten continuous volatility indices (`R_10`
 
 ## Account setup
 
+MegaPay's STK initiation response only confirms that the push was sent; it does not confirm payment. The transaction-status endpoint confirms payment with `TransactionStatus: "Completed"` and `TransactionCode: "0"`. Webhook callbacks use `ResponseCode: 0` for success and a nonzero code for a canceled or failed attempt. The app credits only verified successful transactions; nonzero callback codes and explicit failed/canceled statuses end the deposit as failed.
+
 MarketPilot uses Supabase Auth for email/password accounts and the `marketpilot_profiles` table for account details. Copy `.env.example` to `.env.local` and set:
 
 - `SUPABASE_URL`

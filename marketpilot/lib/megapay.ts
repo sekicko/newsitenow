@@ -35,11 +35,15 @@ function getRequestId(result: Record<string, unknown>): string | null {
 }
 
 function getTransactionStatusResponse(result: Record<string, unknown>): Record<string, unknown> {
-  for (const key of ['data', 'transaction', 'result']) {
-    const nested = result[key];
-    if (isRecord(nested)) return nested;
+  let response = result;
+  for (let depth = 0; depth < 3; depth += 1) {
+    const nested = ['data', 'transaction', 'result']
+      .map((key) => response[key])
+      .find(isRecord);
+    if (!nested) break;
+    response = { ...response, ...nested };
   }
-  return result;
+  return response;
 }
 
 async function postMegaPay(
