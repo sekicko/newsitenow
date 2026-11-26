@@ -357,6 +357,7 @@ export function MarketPilotDashboard() {
   const [cashierTransactionsLoading, setCashierTransactionsLoading] = useState(false);
   const [cashierDepositSuccess, setCashierDepositSuccess] = useState<{ transactionId: string; amount: number } | null>(null);
   const [cashierDepositConfirmation, setCashierDepositConfirmation] = useState<'pending' | 'failed' | null>(null);
+  const [cashierTrackedDepositId, setCashierTrackedDepositId] = useState<string | null>(null);
   const [cashierDepositCheckError, setCashierDepositCheckError] = useState('');
   const [cashierKesPerUsd, setCashierKesPerUsd] = useState<number | null>(null);
   const [cashierPaymentMode, setCashierPaymentMode] = useState<'deposit' | 'withdrawal' | null>(null);
@@ -415,8 +416,24 @@ export function MarketPilotDashboard() {
   useEffect(() => {
     setCashierDepositSuccess(null);
     setCashierDepositConfirmation(null);
+    setCashierTrackedDepositId(null);
     setCashierDepositCheckError('');
   }, [authUser?.id]);
+
+  useEffect(() => {
+    if (!cashierTrackedDepositId || cashierTransactionsOwner !== authUser?.id) return;
+    const transaction = cashierTransactions.find((item) => item.id === cashierTrackedDepositId);
+    if (!transaction || transaction.type !== 'deposit') return;
+
+    if (transaction.status === 'completed') {
+      setCashierDepositConfirmation(null);
+      setCashierDepositSuccess({ transactionId: transaction.id, amount: transaction.amount });
+      setCashierDepositCheckError('');
+    } else if (transaction.status === 'failed' || transaction.status === 'declined') {
+      setCashierDepositSuccess(null);
+      setCashierDepositConfirmation('failed');
+    }
+  }, [authUser?.id, cashierTrackedDepositId, cashierTransactions, cashierTransactionsOwner]);
 
   useEffect(() => {
     if (
@@ -427,6 +444,7 @@ export function MarketPilotDashboard() {
       setCashierPaymentMode(null);
       setCashierDepositSuccess(null);
       setCashierDepositConfirmation(null);
+      setCashierTrackedDepositId(null);
     }, 3_000);
     return () => window.clearTimeout(timeoutId);
   }, [cashierDepositConfirmation, cashierDepositSuccess, cashierPaymentMode]);
@@ -1254,6 +1272,7 @@ export function MarketPilotDashboard() {
       }
 
       if (mode === 'deposit') {
+        setCashierTrackedDepositId(transactionId);
         setCashierDepositConfirmation('pending');
       } else {
         setCashierPaymentMode(null);
@@ -1752,6 +1771,7 @@ export function MarketPilotDashboard() {
                         setCashierMessage('');
                         setCashierDepositSuccess(null);
                         setCashierDepositConfirmation(null);
+                        setCashierTrackedDepositId(null);
                         setCashierPaymentMode('deposit');
                       }}
                       disabled={!authUser || cashierPaymentBusy}
