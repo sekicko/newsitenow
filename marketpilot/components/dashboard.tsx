@@ -357,6 +357,7 @@ export function MarketPilotDashboard() {
   const [cashierTransactionsLoading, setCashierTransactionsLoading] = useState(false);
   const [cashierDepositSuccess, setCashierDepositSuccess] = useState<{ transactionId: string; amount: number } | null>(null);
   const [cashierDepositConfirmation, setCashierDepositConfirmation] = useState<'pending' | 'failed' | null>(null);
+  const [cashierDepositCheckError, setCashierDepositCheckError] = useState('');
   const [cashierKesPerUsd, setCashierKesPerUsd] = useState<number | null>(null);
   const [cashierPaymentMode, setCashierPaymentMode] = useState<'deposit' | 'withdrawal' | null>(null);
   const [cashierPaymentAmount, setCashierPaymentAmount] = useState('10');
@@ -413,6 +414,7 @@ export function MarketPilotDashboard() {
   useEffect(() => {
     setCashierDepositSuccess(null);
     setCashierDepositConfirmation(null);
+    setCashierDepositCheckError('');
   }, [authUser?.id]);
 
   useEffect(() => {
@@ -778,14 +780,14 @@ export function MarketPilotDashboard() {
             cache: 'no-store',
           });
           const result: unknown = await response.json();
-          if (
-            !response.ok ||
-            !result ||
-            typeof result !== 'object' ||
-            authUserIdRef.current !== userId
-          ) return;
+          if (authUserIdRef.current !== userId) return;
+          if (!response.ok || !result || typeof result !== 'object') {
+            setCashierDepositCheckError('Deposit confirmation is temporarily unavailable. Retrying automatically.');
+            return;
+          }
           const resultRecord = result as Record<string, unknown>;
           const status = resultRecord.status;
+          setCashierDepositCheckError('');
           if (status !== 'completed' && status !== 'failed') return;
           setCashierTransactions((current) => current.map((transaction) =>
             transaction.id === transactionId ? { ...transaction, status } : transaction,
@@ -804,7 +806,9 @@ export function MarketPilotDashboard() {
             setCashierDepositConfirmation('failed');
           }
         } catch {
-          // A later poll can recover from temporary network failures.
+          if (authUserIdRef.current === userId) {
+            setCashierDepositCheckError('Deposit confirmation is temporarily unavailable. Retrying automatically.');
+          }
         } finally {
           cashierStatusChecksRef.current.delete(transactionId);
         }
@@ -1825,6 +1829,7 @@ export function MarketPilotDashboard() {
                         <div>
                           <strong>Waiting for confirmation…</strong>
                           <p>We’re checking your deposit. Your real balance will update as soon as it is confirmed.</p>
+                          {cashierDepositCheckError && <p role="status">{cashierDepositCheckError}</p>}
                           <b>{formatMoney(Number(cashierPaymentAmount))} USD</b>
                         </div>
                       </article>
