@@ -1,8 +1,58 @@
 import { NextResponse, type NextRequest } from 'next/server';
+import { completeMegaPayDeposit } from '@/lib/payments-server';
 import { getSupabaseAdminClient } from '@/lib/supabase/admin';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function stringField(record: Record<string, unknown>, names: string[]): string | null {
+  for (const name of names) {
+    const value = record[name];
+    if (typeof value === 'string' && value.trim().length > 0 && value.length <= 200) {
+      return value.trim();
+    }
+  }
+  return null;
+}
+
+function numberField(record: Record<string, unknown>, names: string[]): number | null {
+  for (const name of names) {
+    const value = record[name];
+    const number = typeof value === 'number' || typeof value === 'string' ? Number(value) : NaN;
+    if (Number.isFinite(number)) return number;
+  }
+  return null;
+}
+
+function codeField(record: Record<string, unknown>, names: string[]): number | null {
+  for (const name of names) {
+    const value = record[name];
+    if (value === undefined || value === null || value === '') continue;
+    const code = typeof value === 'number' || typeof value === 'string' ? Number(value) : NaN;
+    if (Number.isInteger(code)) return code;
+  }
+  return null;
+}
+
+function acknowledgement(status: 'received' | 'completed' | 'failed') {
+  return NextResponse.json({ status }, { status: 200 });
+}
+
+function masked(value: string | null): string | null {
+  return value ? `…${value.slice(-6)}` : null;
+}
+
+function logCallbackPayload(body: Record<string, unknown>) {
+  console.info('MegaPay callback received.', {
+    fields: Object.keys(body),
+    responseCode: body.ResponseCode ?? body.response_code ?? null,
+    transactionStatus: body.TransactionStatus ?? body.transaction_status ?? null,
+    transactionReference: masked(stringField(body, ['TransactionReference', 'transaction_reference', 'reference'])),
+    requestId: masked(stringField(body, ['transaction_request_id', 'TransactionRequestID', 'MerchantRequestID'])),
+    hasReceipt: typeof (body.TransactionReceipt ?? body.MpesaReceiptNumber ?? body.mpesa_receipt_number) === 'string',
+    hasPhone: typeof (body.Msisdn ?? body.msisdn) === 'string',
+  });
 }
 
 export async function POST(request: NextRequest) {
@@ -10,98 +60,107 @@ export async function POST(request: NextRequest) {
   try {
     body = await request.json();
   } catch {
-    return NextResponse.json({ error: 'Invalid MegaPay callback.' }, { status: 400 });
+    console.warn('MegaPay callback body was not valid JSON.');
+    return acknowledgement('received');
   }
   if (!isRecord(body)) {
-    return NextResponse.json({ error: 'Invalid payment callback.' }, { status: 400 });
+    console.warn('MegaPay callback body was not a JSON object.');
+    return acknowledgement('received');
   }
-  const reference = body.TransactionReference;
-  if (typeof reference !== 'string' || reference.length < 1 || reference.length > 200) {
-    return NextResponse.json({ error: 'Callback transaction reference is missing.' }, { status: 400 });
+  logCallbackPayload(body);
+
+  const reference = stringField(body, ['TransactionReference', 'transaction_reference', 'reference']);
+  const requestId = stringField(body, [
+    'transaction_request_id',
+    'TransactionRequestID',
+    'MerchantRequestID',
+  ]);
+  if (!reference && !requestId) {
+    console.warn('MegaPay callback did not contain a matching deposit identifier.');
+    return acknowledgement('received');
   }
 
-  const admin = getSupabaseAdminClient();
-  const { data: transaction, error } = await admin
-    .from('marketpilot_transactions')
-    .select('id,user_id,status,transaction_type,amount_kes,megapay_request_id,reference,created_at')
-    .eq('reference', reference)
-    .maybeSingle();
-  if (error) {
-    console.error('MegaPay callback deposit lookup failed.', error.message);
-    return NextResponse.json({ error: 'Callback could not be processed.' }, { status: 503 });
-  }
-  if (!transaction || transaction.transaction_type !== 'deposit') {
-    return NextResponse.json({ error: 'Deposit was not found.' }, { status: 404 });
-  }
-  if (transaction.status === 'completed') {
-    return NextResponse.json({ status: 'completed' });
-  }
-  if (transaction.status !== 'pending') {
-    return NextResponse.json({ status: transaction.status });
-  }
-  const rawResponseCode = body.ResponseCode;
-  const responseCode = typeof rawResponseCode === 'number' && Number.isInteger(rawResponseCode)
-    ? rawResponseCode
-    : typeof rawResponseCode === 'string' && /^-?\d+$/.test(rawResponseCode.trim())
-      ? Number(rawResponseCode)
-      : null;
-  if (responseCode === null) {
-    return NextResponse.json({ error: 'Callback response code is missing or invalid.' }, { status: 400 });
-  }
-  if (responseCode !== 0) {
-    const description = typeof body.ResponseDescription === 'string'
-      ? body.ResponseDescription
-      : `The payment provider reported an unsuccessful transaction (code ${responseCode}).`;
-    const { error: declineError } = await admin.rpc('marketpilot_payment_mark_deposit_failed', {
-      p_transaction_id: transaction.id,
-      p_reason: description,
-    });
-    if (declineError) {
-      console.error('Failed payment callback could not be recorded.', declineError.message);
-      return NextResponse.json({ error: 'Payment callback could not be processed.' }, { status: 503 });
+  try {
+    const admin = getSupabaseAdminClient();
+    const columns = 'id,user_id,status,transaction_type,amount_kes,megapay_request_id,reference';
+    let transaction = null;
+    if (reference) {
+      const { data, error } = await admin
+        .from('marketpilot_transactions')
+        .select(columns)
+        .eq('reference', reference)
+        .maybeSingle();
+      if (error) throw new Error(`MegaPay callback deposit lookup failed: ${error.message}`);
+      transaction = data;
     }
-    return NextResponse.json({ status: 'failed' });
-  }
+    if (!transaction && requestId) {
+      const { data, error } = await admin
+        .from('marketpilot_transactions')
+        .select(columns)
+        .eq('megapay_request_id', requestId)
+        .maybeSingle();
+      if (error) throw new Error(`MegaPay callback request lookup failed: ${error.message}`);
+      transaction = data;
+    }
+    if (!transaction || transaction.transaction_type !== 'deposit') {
+      console.warn('MegaPay callback did not match a deposit.', {
+        reference: masked(reference),
+        requestId: masked(requestId),
+      });
+      return acknowledgement('received');
+    }
+    if (reference && reference !== transaction.reference) {
+      console.warn('MegaPay callback reference did not match its stored deposit.', transaction.id);
+      return acknowledgement('received');
+    }
+    if (transaction.status === 'completed') return acknowledgement('completed');
+    if (transaction.status !== 'pending') return acknowledgement('failed');
 
-  const transactionId = body.TransactionID;
-  const amountKesValue = body.TransactionAmount;
-  const amountKes = typeof amountKesValue === 'number' || typeof amountKesValue === 'string'
-    ? Number(amountKesValue)
-    : NaN;
-  const phone = body.Msisdn;
-  if (
-    typeof transactionId !== 'string' ||
-    transactionId.length < 1 ||
-    transactionId.length > 200 ||
-    !Number.isFinite(amountKes) ||
-    typeof phone !== 'string' ||
-    phone.length < 1
-  ) {
-    console.error('Successful payment callback is missing transaction details.', transaction.id);
-    return NextResponse.json({ error: 'Payment callback is missing transaction details.' }, { status: 400 });
-  }
+    const responseCode = codeField(body, ['ResponseCode', 'response_code']);
+    const providerStatus = stringField(body, ['TransactionStatus', 'transaction_status'])?.toLowerCase();
+    const transactionCode = codeField(body, ['TransactionCode', 'transaction_code']);
+    const successful = responseCode === 0 || (providerStatus === 'completed' && transactionCode === 0);
 
-  const receipt = body.TransactionReceipt;
-  if (receipt !== undefined && receipt !== null && typeof receipt !== 'string') {
-    return NextResponse.json({ error: 'Payment callback receipt is invalid.' }, { status: 400 });
-  }
+    if (responseCode !== null && responseCode !== 0) {
+      const description = stringField(body, ['ResponseDescription', 'response_description'])
+        ?? `MegaPay reported an unsuccessful transaction (code ${responseCode}).`;
+      const { error } = await admin.rpc('marketpilot_payment_mark_deposit_failed', {
+        p_transaction_id: transaction.id,
+        p_reason: description,
+      });
+      if (error) throw new Error(`Failed payment callback could not be recorded: ${error.message}`);
+      return acknowledgement('failed');
+    }
+    if (!successful) return acknowledgement('received');
 
-  const { data: settlement, error: settlementError } = await admin.rpc('marketpilot_payment_complete_deposit', {
-    p_request_id: transaction.megapay_request_id,
-    p_provider_transaction_id: transactionId,
-    p_receipt: typeof receipt === 'string' ? receipt : null,
-    p_amount_kes: amountKes,
-    p_msisdn: phone,
-    p_reference: reference,
-  });
-  if (settlementError) {
-    console.error('Payment callback settlement failed.', settlementError.message);
-    return NextResponse.json({ error: 'Payment callback could not be verified.' }, { status: 503 });
-  }
-  if (!isRecord(settlement) || settlement.status !== 'completed') {
-    console.error('Payment callback settlement returned an invalid result.', transaction.id);
-    return NextResponse.json({ error: 'Payment callback settlement was invalid.' }, { status: 503 });
-  }
+    const providerTransactionId = stringField(body, ['TransactionID', 'transaction_id']);
+    const amountKes = numberField(body, ['TransactionAmount', 'transaction_amount']);
+    const phone = stringField(body, ['Msisdn', 'msisdn']);
+    const receipt = stringField(body, [
+      'TransactionReceipt',
+      'MpesaReceiptNumber',
+      'mpesa_receipt_number',
+      'transaction_receipt',
+    ]);
+    if (!providerTransactionId || amountKes === null || !phone) {
+      console.error('Successful MegaPay callback is missing settlement details.', {
+        transactionId: transaction.id,
+        fields: Object.keys(body),
+      });
+      return acknowledgement('received');
+    }
 
-  return NextResponse.json({ status: 'completed' });
+    await completeMegaPayDeposit(admin, {
+      requestId: transaction.megapay_request_id,
+      reference: transaction.reference,
+      providerTransactionId,
+      receipt,
+      amountKes,
+      phone,
+    });
+    return acknowledgement('completed');
+  } catch (error) {
+    console.error('MegaPay callback could not be settled; status polling will retry.', error);
+    return acknowledgement('received');
+  }
 }

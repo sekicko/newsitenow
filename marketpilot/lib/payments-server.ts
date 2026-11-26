@@ -34,6 +34,32 @@ function codeValue(value: unknown): string | null {
   return null;
 }
 
+export async function completeMegaPayDeposit(
+  admin: PaymentAdminClient,
+  input: {
+    requestId: string | null;
+    reference: string;
+    providerTransactionId: string;
+    receipt: string | null;
+    amountKes: number;
+    phone: string;
+  },
+): Promise<{ balance: number | null }> {
+  const { data, error } = await admin.rpc('marketpilot_payment_complete_deposit', {
+    p_request_id: input.requestId,
+    p_provider_transaction_id: input.providerTransactionId,
+    p_receipt: input.receipt,
+    p_amount_kes: input.amountKes,
+    p_msisdn: input.phone,
+    p_reference: input.reference,
+  });
+  if (error) throw new Error(`Deposit could not be credited: ${error.message}`);
+  if (!isRecord(data) || data.status !== 'completed') {
+    throw new Error('Deposit settlement returned an invalid result.');
+  }
+  return { balance: numberValue(data.balance) };
+}
+
 async function markDepositFailed(
   admin: PaymentAdminClient,
   transactionId: string,
@@ -104,19 +130,15 @@ export async function verifyAndSettleMegaPayDeposit(
       throw new Error('MegaPay completion response is missing verified transaction details.');
     }
 
-    const { data, error } = await admin.rpc('marketpilot_payment_complete_deposit', {
-      p_request_id: transaction.megapay_request_id,
-      p_provider_transaction_id: providerTransactionId,
-      p_receipt: typeof receipt === 'string' ? receipt : null,
-      p_amount_kes: amountKes,
-      p_msisdn: phone,
-      p_reference: transaction.reference,
+    const settlement = await completeMegaPayDeposit(admin, {
+      requestId: transaction.megapay_request_id,
+      reference: transaction.reference,
+      providerTransactionId,
+      receipt: typeof receipt === 'string' ? receipt : null,
+      amountKes,
+      phone,
     });
-    if (error) throw new Error(`Deposit could not be credited: ${error.message}`);
-    if (!isRecord(data) || data.status !== 'completed') {
-      throw new Error('Deposit settlement returned an invalid result.');
-    }
-    const balance = numberValue(data.balance);
+    const balance = settlement.balance;
     return balance === null
       ? { status: 'completed' }
       : { status: 'completed', balance };

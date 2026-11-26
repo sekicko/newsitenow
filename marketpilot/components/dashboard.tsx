@@ -379,6 +379,7 @@ export function MarketPilotDashboard() {
   const openingTradeRef = useRef(false);
   const settlingTradeIdsRef = useRef(new Set<string>());
   const cashierStatusChecksRef = useRef(new Set<string>());
+  const cashierBalanceRefreshesRef = useRef(new Set<string>());
   const cashierStatusBatchRef = useRef(0);
   const digitExitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const clearDigitExitHighlight = useCallback(() => {
@@ -433,6 +434,45 @@ export function MarketPilotDashboard() {
       setCashierDepositSuccess(null);
       setCashierDepositConfirmation('failed');
     }
+  }, [authUser?.id, cashierTrackedDepositId, cashierTransactions, cashierTransactionsOwner]);
+
+  useEffect(() => {
+    if (!authUser?.id || !cashierTrackedDepositId || cashierTransactionsOwner !== authUser.id) return;
+    const transaction = cashierTransactions.find((item) => item.id === cashierTrackedDepositId);
+    if (
+      transaction?.type !== 'deposit' ||
+      transaction.status !== 'completed' ||
+      cashierBalanceRefreshesRef.current.has(transaction.id)
+    ) return;
+
+    const userId = authUser.id;
+    cashierBalanceRefreshesRef.current.add(transaction.id);
+    let active = true;
+    const refreshBalance = async () => {
+      try {
+        const { data, error } = await getSupabaseBrowserClient()
+          .from('marketpilot_wallets')
+          .select('balance')
+          .eq('user_id', userId)
+          .eq('account_type', 'real')
+          .maybeSingle();
+        if (!active) return;
+        if (error) throw error;
+        const balance = data ? storedNumber(data.balance) : null;
+        if (balance === null || balance < 0) throw new Error('Real wallet balance returned an invalid value.');
+        setWalletBalances((current) => current ? { ...current, real: balance } : current);
+      } catch (error) {
+        cashierBalanceRefreshesRef.current.delete(transaction.id);
+        if (active && authUserIdRef.current === userId) {
+          setCashierError(error instanceof Error ? error.message : 'Real wallet balance could not be refreshed.');
+        }
+      }
+    };
+    void refreshBalance();
+
+    return () => {
+      active = false;
+    };
   }, [authUser?.id, cashierTrackedDepositId, cashierTransactions, cashierTransactionsOwner]);
 
   useEffect(() => {
@@ -756,6 +796,9 @@ export function MarketPilotDashboard() {
     };
   }, [authUser?.id, cashierPaymentMode]);
 
+  const hasPendingCashierDeposit = cashierTransactionsOwner === authUser?.id &&
+    cashierTransactions.some((transaction) => transaction.type === 'deposit' && transaction.status === 'pending');
+
   useEffect(() => {
     if (!authUser?.id || currentPage !== 'cashier') return;
     const userId = authUser.id;
@@ -770,9 +813,9 @@ export function MarketPilotDashboard() {
           setCashierError(error instanceof Error ? error.message : 'Transaction history could not be refreshed.');
         }
       });
-    }, 20_000);
+    }, hasPendingCashierDeposit ? 5_000 : 20_000);
     return () => window.clearInterval(intervalId);
-  }, [authUser?.id, currentPage]);
+  }, [authUser?.id, currentPage, hasPendingCashierDeposit]);
 
   const pendingDepositIds = cashierTransactionsOwner === authUser?.id
     ? cashierTransactions
@@ -840,7 +883,7 @@ export function MarketPilotDashboard() {
     };
 
     void checkPendingDeposits();
-    const intervalId = window.setInterval(() => void checkPendingDeposits(), 5_000);
+    const intervalId = window.setInterval(() => void checkPendingDeposits(), 3_000);
     return () => window.clearInterval(intervalId);
   }, [authUser?.id, pendingDepositIds]);
 
