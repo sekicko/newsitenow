@@ -319,7 +319,7 @@ select option { color: var(--text); background: var(--surface); }
 .chart-empty p { margin: 0; color: var(--text-muted); font-size: 10px; text-align: center; }
 .empty-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--text-muted); opacity: .7; }
 .empty-dot.is-loading { animation: pulse 1.2s ease-in-out infinite; }
-.history-panel { padding: 18px 20px 19px; }
+.history-panel { display: flex; min-height: 0; max-height: min(520px, calc(100dvh - 140px)); flex-direction: column; padding: 18px 20px 19px; }
 .digit-distribution-panel { padding: 14px 20px 16px; border-top: 1px solid var(--border); }
 .section-heading { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
 .section-heading .eyebrow { margin-bottom: 4px; }
@@ -382,7 +382,10 @@ select option { color: var(--text); background: var(--surface); }
 .history-tabs button { display: flex; align-items: center; gap: 6px; padding: 0 0 10px; color: var(--text-muted); border: 0; border-bottom: 2px solid transparent; background: none; font-size: 9px; cursor: pointer; }
 .history-tabs button.selected { color: var(--text); border-color: var(--blue); }
 .history-tabs button span { min-width: 17px; padding: 2px 4px; border-radius: 4px; background: var(--surface-soft); color: var(--text-secondary); font-size: 8px; }
-.trade-list { display: grid; }
+.trade-list { display: grid; min-height: 0; max-height: 360px; flex: 1 1 auto; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
+.trade-list:focus-visible { outline: 2px solid var(--blue-bright); outline-offset: -2px; }
+.trade-list::-webkit-scrollbar { width: 7px; }
+.trade-list::-webkit-scrollbar-thumb { border: 2px solid var(--surface); border-radius: 999px; background: var(--border-strong); }
 .trade-row { display: flex; align-items: center; gap: 10px; padding: 12px 0; border-bottom: 1px solid var(--border); }
 .trade-row:last-child { border-bottom: 0; padding-bottom: 0; }
 .trade-symbol-icon { display: grid; flex: 0 0 auto; width: 30px; height: 30px; place-items: center; color: var(--blue-bright); border-radius: 8px; background: rgba(66, 133, 244, .09); }
@@ -894,7 +897,8 @@ select option { color: var(--text); background: var(--surface); }
   .workspace-grid .history-panel { display: none; }
   .practice-panel .form-field:has(.contract-tabs) { display: none; }
   .mobile-history-page { display: block; max-width: 1600px; min-height: calc(100vh - 61px); margin: 0 auto; padding: 22px 13px 20px; }
-  .mobile-history-page .history-panel { margin-bottom: 12px; }
+  .mobile-history-page .history-panel { max-height: calc(100dvh - 130px); margin-bottom: 12px; }
+  .mobile-history-page .trade-list { max-height: none; }
   .account-actions { gap: 5px; }
   .account-button { height: 30px; padding: 0 7px; font-size: 9px; }
   .account-user { gap: 4px; }

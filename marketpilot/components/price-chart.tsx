@@ -13,8 +13,8 @@ import {
   type ISeriesApi,
   type UTCTimestamp,
 } from 'lightweight-charts';
-import type { ChartStyle, MarketCandle, MarketTick } from '@/lib/deriv-client';
-import { precisionFromPip } from '@/lib/deriv-client';
+import type { ChartStyle, MarketCandle, MarketTick } from '@/lib/market-data';
+import { precisionFromPip } from '@/lib/market-data';
 
 type Props = {
   symbol: string;

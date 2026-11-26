@@ -38,6 +38,11 @@ export async function POST(request: NextRequest) {
       .maybeSingle();
     if (transactionError) {
       console.error('MarketPilot payment lookup failed.', transactionError.message);
+      if (transactionError.code === '42501') {
+        return NextResponse.json({
+          error: 'Supabase is missing server read access for payment transactions. Apply the MarketPilot payment service-role read-grants migration.',
+        }, { status: 503 });
+      }
       return NextResponse.json({ error: 'Payment status is temporarily unavailable.' }, { status: 503 });
     }
     if (!transaction || transaction.transaction_type !== 'deposit') {
@@ -68,8 +73,16 @@ export async function POST(request: NextRequest) {
     });
   } catch (error) {
     console.error('Deposit status route failed.', { transactionId, error });
+    const configurationError = error instanceof Error && (
+      error.message === 'SUPABASE_URL is missing from this deployment environment.' ||
+      error.message === 'Set SUPABASE_SECRET_KEY or SUPABASE_SERVICE_ROLE_KEY for server-side Supabase services.'
+    );
     return NextResponse.json(
-      { error: 'Deposit confirmation is temporarily unavailable. The app will retry automatically.' },
+      {
+        error: configurationError && error instanceof Error
+          ? error.message
+          : 'Deposit confirmation is temporarily unavailable. The app will retry automatically.',
+      },
       { status: 503 },
     );
   }
