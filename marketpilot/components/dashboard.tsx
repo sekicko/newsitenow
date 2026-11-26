@@ -2143,20 +2143,6 @@ export function MarketPilotDashboard() {
 
       <div className={`page-content${currentPage !== 'hub' ? ' is-inactive-page' : ''}`}>
         <div className="mobile-page-heading">Traders Hub</div>
-        <div className="connection-alert" role="status">
-          {market.connectionState === 'connected' ? <Wifi size={17} /> : <WifiOff size={17} />}
-          <div>
-            <strong>
-              {market.connectionState === 'connected' ? 'Live Deriv market data' : 'Deriv market data unavailable'}
-            </strong>
-            <span>
-              {market.connectionState === 'connected'
-                ? 'Deriv prices stay unchanged on the chart. Real-wallet trades append a stable pseudo-random MarketPilot digit to each tick; Demo trades use Deriv’s published digits.'
-                : `${market.error || 'Waiting for a live Deriv connection.'} The chart will reconnect automatically; it will not substitute synthetic prices.`}
-            </span>
-          </div>
-        </div>
-
         <div className="workspace-grid">
           <div className="primary-column">
             <section className="panel market-panel" id="market">
