@@ -39,11 +39,6 @@ export async function POST(request: NextRequest) {
   if (transaction.status !== 'pending') {
     return NextResponse.json({ status: transaction.status });
   }
-  if (!transaction.megapay_request_id) {
-    console.error('Payment callback arrived before its request reference was saved.', transaction.id);
-    return NextResponse.json({ error: 'Payment callback is being retried.' }, { status: 503 });
-  }
-
   const rawResponseCode = body.ResponseCode;
   const responseCode = typeof rawResponseCode === 'number' && Number.isInteger(rawResponseCode)
     ? rawResponseCode

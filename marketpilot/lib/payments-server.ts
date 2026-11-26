@@ -67,9 +67,10 @@ export async function verifyAndSettleMegaPayDeposit(
   if (!Number.isFinite(createdAt)) throw new Error('Deposit creation time is invalid.');
   const timedOut = Date.now() - createdAt >= DEPOSIT_CONFIRMATION_TIMEOUT_MS;
   if (!transaction.megapay_request_id) {
-    return timedOut
-      ? markDepositFailed(admin, transaction.id, 'Deposit confirmation timed out after two minutes.')
-      : { status: 'pending' };
+    if (timedOut) {
+      console.warn('Deposit has no MegaPay request ID; leaving it pending for a verifiable callback.', transaction.id);
+    }
+    return { status: 'pending' };
   }
 
   let result: Awaited<ReturnType<typeof getMegaPayTransactionStatus>>;

@@ -1,7 +1,7 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { parsePhoneNumberFromString } from 'libphonenumber-js';
 import { assertMegaPayConfigured, initiateMegaPayStk, MegaPayRejectedError } from '@/lib/megapay';
-import { getSupabaseAdminClient } from '@/lib/supabase/admin';
+import { assertSupabaseAdminConfigured, getSupabaseAdminClient } from '@/lib/supabase/admin';
 import { createSupabaseServerClient } from '@/lib/supabase/server';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -42,6 +42,14 @@ export async function POST(request: NextRequest) {
   const { data: { user }, error: userError } = await supabase.auth.getUser();
   if (userError || !user) {
     return NextResponse.json({ error: 'Sign in to make a deposit.' }, { status: 401 });
+  }
+
+  try {
+    assertSupabaseAdminConfigured();
+  } catch {
+    return NextResponse.json({
+      error: 'Deposits are temporarily unavailable. Please try again later.',
+    }, { status: 503 });
   }
 
   const { data: depositData, error: createError } = await supabase.rpc('marketpilot_create_deposit', {
