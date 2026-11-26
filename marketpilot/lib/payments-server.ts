@@ -85,7 +85,7 @@ async function markDepositFailed(
 export async function verifyAndSettleMegaPayDeposit(
   admin: PaymentAdminClient,
   transaction: PendingDeposit,
-): Promise<{ status: 'pending' | 'completed' | 'failed'; balance?: number }> {
+): Promise<{ status: 'pending' | 'completed' | 'failed'; balance?: number; message?: string }> {
   if (transaction.status !== 'pending') {
     return { status: transaction.status === 'completed' ? 'completed' : 'failed' };
   }
@@ -96,7 +96,10 @@ export async function verifyAndSettleMegaPayDeposit(
     if (timedOut) {
       console.warn('Deposit has no MegaPay request ID; leaving it pending for a verifiable callback.', transaction.id);
     }
-    return { status: 'pending' };
+    return {
+      status: 'pending',
+      message: 'This deposit has no saved MegaPay request ID, so polling cannot verify it. Waiting for the MegaPay callback.',
+    };
   }
 
   let result: Awaited<ReturnType<typeof getMegaPayTransactionStatus>>;
@@ -116,8 +119,16 @@ export async function verifyAndSettleMegaPayDeposit(
   const hasSuccessfulTransactionCode = transactionCode === '0';
   if (hasCompletedStatus && hasSuccessfulTransactionCode) {
     const amountKes = numberValue(result.TransactionAmount ?? result.transaction_amount);
-    const providerTransactionId = result.TransactionID ?? result.transaction_id;
-    const receipt = result.TransactionReceipt ?? result.transaction_receipt;
+    const providerTransactionId = result.TransactionID
+      ?? result.transaction_id
+      ?? result.CheckoutRequestID
+      ?? result.checkout_request_id
+      ?? result.MerchantRequestID
+      ?? result.merchant_request_id;
+    const receipt = result.TransactionReceipt
+      ?? result.transaction_receipt
+      ?? result.MpesaReceiptNumber
+      ?? result.mpesa_receipt_number;
     const phone = result.Msisdn ?? result.msisdn;
     if (
       amountKes === null ||

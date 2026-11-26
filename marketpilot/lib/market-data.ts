@@ -1,5 +1,9 @@
 export type ConnectionState = 'connecting' | 'connected' | 'reconnecting' | 'disconnected';
-export type DerivMessage = Record<string, unknown> & { msg_type?: string; req_id?: number };
+
+export type DerivMessage = Record<string, unknown> & {
+  msg_type?: string;
+  req_id?: number;
+};
 
 type PendingRequest = {
   resolve: (message: DerivMessage) => void;
@@ -7,31 +11,20 @@ type PendingRequest = {
   timeout: ReturnType<typeof setTimeout>;
 };
 
-const DEFAULT_WS_URL = 'wss://api.derivws.com/trading/v1/options/ws/public';
+export const DERIV_PUBLIC_WS_URL = 'wss://api.derivws.com/trading/v1/options/ws/public';
 
-export function getDerivWsUrl(): string {
-  return process.env.DERIV_WS_URL?.trim() || DEFAULT_WS_URL;
-}
-
-export class DerivClient {
+export class DerivPublicClient {
   private socket: WebSocket | null = null;
   private readonly pending = new Map<number, PendingRequest>();
   private readonly listeners = new Set<(message: DerivMessage) => void>();
   private requestId = 0;
   private retryCount = 0;
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
+  private pingTimer: ReturnType<typeof setInterval> | null = null;
   private stopped = false;
-  private state: ConnectionState = 'connecting';
 
-  constructor(
-    private readonly url: string,
-    private readonly onState: (state: ConnectionState) => void,
-  ) {
+  constructor(private readonly onState: (state: ConnectionState) => void) {
     this.connect();
-  }
-
-  get connectionState(): ConnectionState {
-    return this.state;
   }
 
   listen(listener: (message: DerivMessage) => void): () => void {
@@ -41,15 +34,15 @@ export class DerivClient {
 
   request(payload: Record<string, unknown>): Promise<DerivMessage> {
     if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
-      return Promise.reject(new Error('Market data is not connected.'));
+      return Promise.reject(new Error('Deriv market data is not connected.'));
     }
 
     const reqId = ++this.requestId;
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
         this.pending.delete(reqId);
-        reject(new Error('Market data did not respond before the request timed out.'));
-      }, 15_000);
+        reject(new Error('Deriv market data did not respond before the request timed out.'));
+      }, 12_000);
 
       this.pending.set(reqId, { resolve, reject, timeout });
       try {
@@ -57,7 +50,7 @@ export class DerivClient {
       } catch (error) {
         clearTimeout(timeout);
         this.pending.delete(reqId);
-        reject(error instanceof Error ? error : new Error('Unable to send market data request.'));
+        reject(error instanceof Error ? error : new Error('Unable to request Deriv market data.'));
       }
     });
   }
@@ -65,21 +58,23 @@ export class DerivClient {
   close(): void {
     this.stopped = true;
     if (this.retryTimer) clearTimeout(this.retryTimer);
+    if (this.pingTimer) clearInterval(this.pingTimer);
     this.retryTimer = null;
-    this.rejectPending(new Error('Market data connection closed.'));
+    this.pingTimer = null;
+    this.rejectPending(new Error('Deriv market data client was closed.'));
     const socket = this.socket;
     this.socket = null;
     socket?.close();
-    this.setState('disconnected');
+    this.onState('disconnected');
   }
 
   private connect(): void {
     if (this.stopped) return;
-    this.setState(this.retryCount ? 'reconnecting' : 'connecting');
+    this.onState(this.retryCount ? 'reconnecting' : 'connecting');
 
     let socket: WebSocket;
     try {
-      socket = new WebSocket(this.url);
+      socket = new WebSocket(DERIV_PUBLIC_WS_URL);
     } catch {
       this.scheduleReconnect();
       return;
@@ -89,31 +84,38 @@ export class DerivClient {
     socket.onopen = () => {
       if (this.socket !== socket || this.stopped) return;
       this.retryCount = 0;
-      this.setState('connected');
+      this.onState('connected');
+      this.pingTimer = setInterval(() => {
+        const activeSocket = this.socket;
+        if (!activeSocket || activeSocket.readyState !== WebSocket.OPEN) return;
+        void this.request({ ping: 1 }).catch(() => {
+          if (this.socket === activeSocket) activeSocket.close();
+        });
+      }, 45_000);
     };
 
     socket.onmessage = (event: MessageEvent<string>) => {
       if (this.socket !== socket) return;
       let message: DerivMessage;
       try {
-        message = JSON.parse(event.data) as DerivMessage;
+        const parsed: unknown = JSON.parse(event.data);
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return;
+        message = parsed as DerivMessage;
       } catch {
         return;
       }
 
-      const reqId = message.req_id;
-      if (typeof reqId === 'number') {
-        const request = this.pending.get(reqId);
+      if (typeof message.req_id === 'number') {
+        const request = this.pending.get(message.req_id);
         if (request) {
           clearTimeout(request.timeout);
-          this.pending.delete(reqId);
+          this.pending.delete(message.req_id);
           if (message.error && typeof message.error === 'object') {
             const error = message.error as { message?: unknown; code?: unknown };
             const detail = [error.code, error.message]
               .filter((value): value is string => typeof value === 'string')
-              .join(': ')
-              .replace(/\bderiv\b/gi, 'market data provider');
-            request.reject(new Error(detail || 'The market data provider returned an API error.'));
+              .join(': ');
+            request.reject(new Error(detail || 'Deriv returned a market-data error.'));
           } else {
             request.resolve(message);
           }
@@ -123,17 +125,23 @@ export class DerivClient {
       this.listeners.forEach((listener) => listener(message));
     };
 
+    socket.onerror = () => {
+      if (this.socket === socket && !this.stopped) socket.close();
+    };
+
     socket.onclose = () => {
       if (this.socket !== socket || this.stopped) return;
       this.socket = null;
-      this.rejectPending(new Error('Market data connection was interrupted.'));
+      if (this.pingTimer) clearInterval(this.pingTimer);
+      this.pingTimer = null;
+      this.rejectPending(new Error('The Deriv market-data connection was interrupted.'));
       this.scheduleReconnect();
     };
   }
 
   private scheduleReconnect(): void {
     if (this.stopped || this.retryTimer) return;
-    this.setState('reconnecting');
+    this.onState('reconnecting');
     const delay = Math.min(1_000 * 2 ** this.retryCount, 20_000);
     this.retryCount += 1;
     this.retryTimer = setTimeout(() => {
@@ -148,11 +156,6 @@ export class DerivClient {
       request.reject(error);
     });
     this.pending.clear();
-  }
-
-  private setState(state: ConnectionState): void {
-    this.state = state;
-    this.onState(state);
   }
 }
 
@@ -229,18 +232,31 @@ export const CONTRACT_LABELS: Record<string, string> = {
   PUT: 'Fall',
 };
 
+export function normalizePipSize(value: unknown): number | null {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > 10) return null;
+  return Number.isInteger(value) ? 10 ** -value : value;
+}
+
 export function normalizeSymbols(value: unknown): MarketSymbol[] {
   if (!Array.isArray(value)) return [];
   return value.flatMap((item) => {
-    if (!item || typeof item !== 'object') return [];
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return [];
     const row = item as Record<string, unknown>;
-    if (typeof row.underlying_symbol !== 'string') return [];
+    const pipSize = normalizePipSize(row.pip_size);
+    if (
+      typeof row.underlying_symbol !== 'string' ||
+      typeof row.underlying_symbol_name !== 'string' ||
+      typeof row.market !== 'string' ||
+      typeof row.submarket !== 'string' ||
+      pipSize === null ||
+      pipSize <= 0
+    ) return [];
     return [{
       symbol: row.underlying_symbol,
-      name: typeof row.underlying_symbol_name === 'string' ? row.underlying_symbol_name : row.underlying_symbol,
-      market: typeof row.market === 'string' ? row.market : 'Other',
-      submarket: typeof row.submarket === 'string' ? row.submarket : '',
-      pipSize: typeof row.pip_size === 'number' ? row.pip_size : 0.01,
+      name: row.underlying_symbol_name,
+      market: row.market,
+      submarket: row.submarket,
+      pipSize,
       exchangeOpen: row.exchange_is_open === 1,
       suspended: row.is_trading_suspended === 1,
     }];
@@ -248,30 +264,50 @@ export function normalizeSymbols(value: unknown): MarketSymbol[] {
 }
 
 export function normalizeTick(value: unknown): MarketTick | null {
-  if (!value || typeof value !== 'object') return null;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const row = value as Record<string, unknown>;
+  const pipSize = normalizePipSize(row.pip_size);
   if (
     typeof row.symbol !== 'string' ||
     typeof row.quote !== 'number' ||
-    typeof row.epoch !== 'number'
+    !Number.isFinite(row.quote) ||
+    typeof row.epoch !== 'number' ||
+    !Number.isInteger(row.epoch) ||
+    pipSize === null ||
+    pipSize <= 0
   ) return null;
   return {
     symbol: row.symbol,
     quote: row.quote,
     epoch: row.epoch,
-    pipSize: typeof row.pip_size === 'number' ? row.pip_size : 0.01,
+    pipSize,
   };
 }
 
 export function normalizeContracts(value: unknown): AvailableContract[] {
-  if (!value || typeof value !== 'object') return [];
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return [];
   const available = (value as { available?: unknown }).available;
   if (!Array.isArray(available)) return [];
-  return available.filter((item): item is AvailableContract => (
-    !!item &&
-    typeof item === 'object' &&
-    typeof (item as AvailableContract).contract_type === 'string'
-  ));
+  return available.flatMap((item) => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return [];
+    const row = item as Record<string, unknown>;
+    if (
+      typeof row.contract_type !== 'string' ||
+      typeof row.contract_category !== 'string' ||
+      typeof row.expiry_type !== 'string' ||
+      typeof row.min_contract_duration !== 'string' ||
+      typeof row.max_contract_duration !== 'string'
+    ) return [];
+    return [{
+      contract_type: row.contract_type,
+      contract_category: row.contract_category,
+      expiry_type: row.expiry_type,
+      min_contract_duration: row.min_contract_duration,
+      max_contract_duration: row.max_contract_duration,
+      sentiment: typeof row.sentiment === 'string' ? row.sentiment : '',
+      barriers: typeof row.barriers === 'number' ? row.barriers : 0,
+    }];
+  });
 }
 
 export function precisionFromPip(pipSize: number): number {
@@ -284,6 +320,21 @@ export function getLastDigit(tick: MarketTick): number {
   const precision = precisionFromPip(tick.pipSize);
   const formatted = tick.quote.toFixed(precision);
   return Number(formatted.at(-1));
+}
+
+export function getMarketPilotTickDigit(tick: MarketTick): number {
+  const precision = precisionFromPip(tick.pipSize);
+  const identity = `${tick.symbol}|${tick.epoch}|${tick.quote.toFixed(precision)}|${tick.pipSize}`;
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < identity.length; index += 1) {
+    hash = Math.imul(hash ^ identity.charCodeAt(index), 0x01000193);
+  }
+  hash ^= hash >>> 16;
+  hash = Math.imul(hash, 0x7feb352d);
+  hash ^= hash >>> 15;
+  hash = Math.imul(hash, 0x846ca68b);
+  hash ^= hash >>> 16;
+  return (hash >>> 0) % 10;
 }
 
 export function parseContractDuration(value: string): { amount: number; unit: string } | null {

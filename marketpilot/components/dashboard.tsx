@@ -27,13 +27,14 @@ import {
   CONTRACT_TYPES,
   VOLATILITY_SYMBOLS,
   getLastDigit,
+  getMarketPilotTickDigit,
   parseContractDuration,
   precisionFromPip,
   type AvailableContract,
   type MarketTick,
   type PracticeKind,
-} from '@/lib/deriv-client';
-import { getFixedContractPayout, type PracticeTrade } from '@/lib/practice';
+} from '@/lib/market-data';
+import { getSimulatedContractPayout, type PracticeTrade } from '@/lib/practice';
 import { getSupabaseBrowserClient } from '@/lib/supabase/browser';
 import type { User } from '@supabase/supabase-js';
 import type { WalletAccount, WalletBalances } from '@/lib/wallets';
@@ -60,7 +61,6 @@ const contractDefaults: Record<PracticeKind, string> = {
   'rise-fall': 'CALL',
 };
 
-const WALLET_CURRENCY = 'USD';
 type PracticeQuote = { askPrice: number; payout: number };
 type TradeHistoryView = 'all' | 'open' | 'closed';
 type DigitExitHighlight = {
@@ -82,6 +82,10 @@ type CashierTransaction = {
 function storedNumber(value: unknown): number | null {
   const parsed = typeof value === 'number' || typeof value === 'string' ? Number(value) : NaN;
   return Number.isFinite(parsed) ? parsed : null;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 async function loadCashierTransactions(userId: string): Promise<CashierTransaction[]> {
@@ -144,7 +148,8 @@ function parseStoredTrade(value: unknown, entrySerial: number): PracticeTrade | 
     entryDigit === null ||
     entryEpoch === null ||
     elapsed === null ||
-    outcomeSource !== 'market_data' ||
+    (outcomeSource !== 'market_data' && outcomeSource !== 'local_simulation') ||
+    (outcomeSource === 'local_simulation' && row.account_type !== 'real') ||
     typeof row.duration_unit !== 'string'
   ) return null;
 
@@ -219,7 +224,7 @@ function parseSettlementResult(value: unknown): SettlementResult | null {
     payout === null ||
     profit === null ||
     (row.status !== 'won' && row.status !== 'lost') ||
-    row.outcomeSource !== 'market_data'
+    (row.outcomeSource !== 'market_data' && row.outcomeSource !== 'local_simulation')
   ) return null;
   return {
     balance,
@@ -314,7 +319,7 @@ function TradeHistoryPanel({
       </div>
       {historyError && <p className="trade-action-error" role="status">{historyError}</p>}
       {visibleTrades.length ? (
-        <div className="trade-list">
+        <div className="trade-list" role="region" aria-label="Trade history list" tabIndex={0}>
           {visibleTrades.map((trade) => <TradeRow key={trade.id} trade={trade} currency="USD" />)}
         </div>
       ) : (
@@ -378,6 +383,7 @@ export function MarketPilotDashboard() {
   const tradeCounter = useRef(0);
   const openingTradeRef = useRef(false);
   const settlingTradeIdsRef = useRef(new Set<string>());
+  const settlementExitTicksRef = useRef(new Map<string, MarketTick>());
   const cashierStatusChecksRef = useRef(new Set<string>());
   const cashierBalanceRefreshesRef = useRef(new Set<string>());
   const cashierStatusBatchRef = useRef(0);
@@ -494,7 +500,9 @@ export function MarketPilotDashboard() {
   const latestHistoricalTick = market.chartTicks.at(-1) ?? null;
   const currentTick = latestLiveTick ?? latestHistoricalTick;
   const precision = precisionFromPip(currentTick?.pipSize ?? selectedMarket?.pipSize ?? 0.01);
-  const formattedPrice = currentTick ? currentTick.quote.toFixed(precision) : null;
+  const formattedPrice = currentTick
+    ? `${currentTick.quote.toFixed(precision)}${activeWallet === 'real' ? getMarketPilotTickDigit(currentTick) : ''}`
+    : null;
   const pricePrefix = formattedPrice?.slice(0, -1) ?? '';
   const priceLastDigit = formattedPrice?.at(-1);
   const contractTypes = CONTRACT_TYPES[kind];
@@ -535,7 +543,11 @@ export function MarketPilotDashboard() {
   const alternativeSafeDuration = safeDuration;
   const marketOpen = !!selectedMarket?.exchangeOpen && !selectedMarket.suspended;
   const activeWalletBalance = walletBalances?.[activeWallet] ?? 0;
-  const activeDigit = currentTick ? getLastDigit(currentTick) : null;
+  const activeDigit = currentTick
+    ? activeWallet === 'real'
+      ? getMarketPilotTickDigit(currentTick)
+      : getLastDigit(currentTick)
+    : null;
   const activeDigitTrade = trades.find((trade) =>
     trade.status === 'Open' &&
     trade.symbol === market.selectedSymbol &&
@@ -551,11 +563,16 @@ export function MarketPilotDashboard() {
   const digitPercentages = useMemo(() => {
     const ticksBeforeLatest = market.chartTicks.slice(0, -1).slice(-1_000);
     const counts = Array.from({ length: 10 }, () => 0);
-    for (const tick of ticksBeforeLatest) counts[getLastDigit(tick)] += 1;
+    for (const tick of ticksBeforeLatest) {
+      const lastDigit = activeWallet === 'real'
+        ? getMarketPilotTickDigit(tick)
+        : getLastDigit(tick);
+      counts[lastDigit] += 1;
+    }
     return counts.map((count) => ticksBeforeLatest.length
       ? (count / ticksBeforeLatest.length) * 100
       : null);
-  }, [market.chartTicks]);
+  }, [activeWallet, market.chartTicks]);
   const knownDigitPercentages = digitPercentages.filter((percentage): percentage is number => percentage !== null);
   const highestDigitPercentage = knownDigitPercentages.length ? Math.max(...knownDigitPercentages) : null;
   const lowestDigitPercentage = knownDigitPercentages.length ? Math.min(...knownDigitPercentages) : null;
@@ -575,58 +592,6 @@ export function MarketPilotDashboard() {
     setCashierMarketTrends((current) => ({ ...current, ...latestTrends }));
   }, [market.connectionState, market.tickEvents]);
 
-  useEffect(() => {
-    if (currentPage !== 'cashier' || market.connectionState !== 'connected') return;
-    let cancelled = false;
-    const subscriptionIds = new Map<string, string>();
-
-    void Promise.all(VOLATILITY_SYMBOLS.map(async (symbol) => {
-      try {
-        const response = await market.request({
-          ticks_history: symbol.symbol,
-          count: 30,
-          end: 'latest',
-          style: 'ticks',
-        });
-        const history = response.history as { prices?: unknown } | undefined;
-        if (!Array.isArray(history?.prices)) return [symbol.symbol, [] as number[]] as const;
-        const prices = history.prices.filter((price): price is number => typeof price === 'number').slice(-30);
-        return [symbol.symbol, prices] as const;
-      } catch {
-        return [symbol.symbol, [] as number[]] as const;
-      }
-    })).then((entries) => {
-      if (cancelled) return;
-      setCashierMarketTrends((current) => {
-        const next = { ...current };
-        entries.forEach(([symbol, prices]) => {
-          if (prices.length) next[symbol] = prices;
-        });
-        return next;
-      });
-    });
-
-    VOLATILITY_SYMBOLS.forEach((symbol) => {
-      void market.request({ ticks: symbol.symbol, subscribe: 1 }).then((response) => {
-        const subscription = response.subscription as { id?: unknown } | undefined;
-        if (typeof subscription?.id !== 'string' || cancelled) {
-          if (typeof subscription?.id === 'string') {
-            void market.request({ forget: subscription.id }).catch(() => undefined);
-          }
-          return;
-        }
-        subscriptionIds.set(symbol.symbol, subscription.id);
-      }).catch(() => undefined);
-    });
-
-    return () => {
-      cancelled = true;
-      subscriptionIds.forEach((subscriptionId) => {
-        void market.request({ forget: subscriptionId }).catch(() => undefined);
-      });
-    };
-  }, [currentPage, market.connectionState, market.request]);
-
   useEffect(() => () => {
     if (digitExitTimerRef.current !== null) clearTimeout(digitExitTimerRef.current);
   }, []);
@@ -642,6 +607,7 @@ export function MarketPilotDashboard() {
     setOpeningTrade(false);
     openingTradeRef.current = false;
     settlingTradeIdsRef.current.clear();
+    settlementExitTicksRef.current.clear();
     setTrades([]);
 
     if (!authUser) {
@@ -849,11 +815,24 @@ export function MarketPilotDashboard() {
           const result: unknown = await response.json();
           if (authUserIdRef.current !== userId) return;
           if (!response.ok || !result || typeof result !== 'object') {
-            setCashierDepositCheckError('Deposit confirmation is temporarily unavailable. Retrying automatically.');
+            const resultRecord = result && typeof result === 'object'
+              ? result as Record<string, unknown>
+              : null;
+            setCashierDepositCheckError(
+              typeof resultRecord?.error === 'string'
+                ? resultRecord.error
+                : 'Deposit confirmation is temporarily unavailable. Retrying automatically.',
+            );
             return;
           }
           const resultRecord = result as Record<string, unknown>;
           const status = resultRecord.status;
+          if (status === 'pending') {
+            setCashierDepositCheckError(
+              typeof resultRecord.message === 'string' ? resultRecord.message : '',
+            );
+            return;
+          }
           setCashierDepositCheckError('');
           if (status !== 'completed' && status !== 'failed') return;
           setCashierTransactions((current) => current.map((transaction) =>
@@ -913,47 +892,18 @@ export function MarketPilotDashboard() {
     setQuoteError('');
     setQuoteLoading(true);
     const timer = setTimeout(() => {
-      const request: Record<string, unknown> = {
-        proposal: 1,
-        amount: stakeValue,
-        basis: 'stake',
-        contract_type: selectedContractType,
-        currency: WALLET_CURRENCY,
-        duration: safeDuration,
-        duration_unit: durationLimits.unit,
-        underlying_symbol: market.selectedSymbol,
-      };
-      if (['DIGITOVER', 'DIGITUNDER', 'DIGITMATCH', 'DIGITDIFF'].includes(selectedContractType)) {
-        request.barrier = String(digitValue);
+      if (cancelled) return;
+      const payout = getSimulatedContractPayout(
+        selectedContractType,
+        digitIsValid ? digitValue : null,
+        stakeValue,
+      );
+      if (payout === null) {
+        setQuoteError('A simulated payout is not available for these conditions.');
+      } else {
+        setQuote({ askPrice: stakeValue, payout });
       }
-
-      market.request(request).then((response) => {
-        if (cancelled) return;
-        const proposal = response.proposal as Record<string, unknown> | undefined;
-        if (
-          !proposal ||
-          typeof proposal.ask_price !== 'number' ||
-          typeof proposal.payout !== 'number'
-        ) {
-          setQuoteError('Market data did not return a complete price proposal.');
-          return;
-        }
-        const fixedPayout = getFixedContractPayout(
-          selectedContractType,
-          digitIsValid ? digitValue : null,
-          proposal.ask_price,
-        );
-        setQuote({
-          askPrice: proposal.ask_price,
-          payout: fixedPayout ?? proposal.payout,
-        });
-      }).catch((error: unknown) => {
-        if (!cancelled) {
-          setQuoteError(error instanceof Error ? error.message : 'A price proposal is not available for these conditions.');
-        }
-      }).finally(() => {
-        if (!cancelled) setQuoteLoading(false);
-      });
+      setQuoteLoading(false);
     }, 350);
 
     return () => {
@@ -964,12 +914,10 @@ export function MarketPilotDashboard() {
     availableChoices,
     digit,
     digitIsValid,
-    durationLimits.unit,
     duration,
     durationIsValid,
     market.connectionState,
     marketOpen,
-    market.request,
     market.selectedSymbol,
     safeDuration,
     selectedContractType,
@@ -1002,47 +950,18 @@ export function MarketPilotDashboard() {
     setAlternativeQuoteError('');
     setAlternativeQuoteLoading(true);
     const timer = setTimeout(() => {
-      const request: Record<string, unknown> = {
-        proposal: 1,
-        amount: stakeValue,
-        basis: 'stake',
-        contract_type: alternativeContractType,
-        currency: WALLET_CURRENCY,
-        duration: alternativeSafeDuration,
-        duration_unit: alternativeDurationLimits.unit,
-        underlying_symbol: market.selectedSymbol,
-      };
-      if (['DIGITOVER', 'DIGITUNDER', 'DIGITMATCH', 'DIGITDIFF'].includes(alternativeContractType)) {
-        request.barrier = String(digitValue);
+      if (cancelled) return;
+      const payout = getSimulatedContractPayout(
+        alternativeContractType,
+        digitIsValid ? digitValue : null,
+        stakeValue,
+      );
+      if (payout === null) {
+        setAlternativeQuoteError('A simulated payout is not available for these conditions.');
+      } else {
+        setAlternativeQuote({ askPrice: stakeValue, payout });
       }
-
-      market.request(request).then((response) => {
-        if (cancelled) return;
-        const proposal = response.proposal as Record<string, unknown> | undefined;
-        if (
-          !proposal ||
-          typeof proposal.ask_price !== 'number' ||
-          typeof proposal.payout !== 'number'
-        ) {
-          setAlternativeQuoteError('Market data did not return a complete price proposal.');
-          return;
-        }
-        const fixedPayout = getFixedContractPayout(
-          alternativeContractType,
-          digitIsValid ? digitValue : null,
-          proposal.ask_price,
-        );
-        setAlternativeQuote({
-          askPrice: proposal.ask_price,
-          payout: fixedPayout ?? proposal.payout,
-        });
-      }).catch((error: unknown) => {
-        if (!cancelled) {
-          setAlternativeQuoteError(error instanceof Error ? error.message : 'A price proposal is not available for these conditions.');
-        }
-      }).finally(() => {
-        if (!cancelled) setAlternativeQuoteLoading(false);
-      });
+      setAlternativeQuoteLoading(false);
     }, 350);
 
     return () => {
@@ -1051,7 +970,6 @@ export function MarketPilotDashboard() {
     };
   }, [
     alternativeContractType,
-    alternativeDurationLimits.unit,
     alternativeSafeDuration,
     availableChoices,
     digit,
@@ -1060,7 +978,6 @@ export function MarketPilotDashboard() {
     durationIsValid,
     market.connectionState,
     marketOpen,
-    market.request,
     market.selectedSymbol,
     stakeIsValid,
     stakeValue,
@@ -1073,8 +990,7 @@ export function MarketPilotDashboard() {
       if (trade.status !== 'Open') return trade;
       const ticksAfterEntry = market.tickEvents.filter(({ serial, tick }) => (
         serial > trade.entrySerial &&
-        tick.symbol === trade.symbol &&
-        tick.epoch >= trade.entryEpoch
+        tick.symbol === trade.symbol
       ));
       const elapsed = Math.min(ticksAfterEntry.length, trade.duration);
       if (!elapsed || elapsed === trade.elapsed) return trade;
@@ -1088,37 +1004,91 @@ export function MarketPilotDashboard() {
       const settlementKey = `${authUser.id}:${trade.id}`;
       if (
         trade.status !== 'Open' ||
-        trade.elapsed < trade.duration ||
         settlingTradeIdsRef.current.has(settlementKey)
       ) continue;
 
       const ticksAfterEntry = market.tickEvents.filter(({ serial, tick }) => (
         serial > trade.entrySerial &&
-        tick.symbol === trade.symbol &&
-        tick.epoch >= trade.entryEpoch
+        tick.symbol === trade.symbol
       ));
-      const exitTick = ticksAfterEntry[trade.duration - 1]?.tick;
+      const exitTick = settlementExitTicksRef.current.get(settlementKey)
+        ?? ticksAfterEntry[trade.duration - 1]?.tick;
       if (!exitTick) continue;
+      settlementExitTicksRef.current.set(settlementKey, exitTick);
 
       const userId = authUser.id;
       settlingTradeIdsRef.current.add(settlementKey);
       const settleTrade = async () => {
         try {
           const supabase = getSupabaseBrowserClient();
-          const { data, error } = await supabase.rpc('marketpilot_settle_practice_trade', {
-            p_trade_id: trade.id,
-            p_account_type: trade.accountType,
-            p_exit_price: exitTick.quote,
-            p_exit_pip_size: exitTick.pipSize,
-            p_exit_digit: getLastDigit(exitTick),
-            p_exit_epoch: exitTick.epoch,
-          });
-          if (error) throw new Error(`Supabase could not settle this Demo trade: ${error.message}`);
-          let settlement = parseSettlementResult(data);
+          let resultData: unknown;
+          let settledExitTick = exitTick;
+          let settledExitDigit = getLastDigit(exitTick);
+          if (trade.accountType === 'real') {
+            const response = await fetch('/api/trading/real/settle', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                tradeId: trade.id,
+                symbol: trade.symbol,
+                entryEpoch: trade.entryEpoch,
+                exitTick: {
+                  quote: exitTick.quote,
+                  pipSize: exitTick.pipSize,
+                  epoch: exitTick.epoch,
+                },
+              }),
+            });
+            const responseData: unknown = await response.json();
+            if (!response.ok) {
+              const errorMessage = isRecord(responseData) && typeof responseData.error === 'string'
+                ? responseData.error
+                : 'The Real wallet trade could not be settled. It will retry automatically.';
+              throw new Error(errorMessage);
+            }
+            if (!isRecord(responseData)) {
+              throw new Error('The Real wallet returned an invalid simulated settlement.');
+            }
+            if (responseData.status === 'open') return;
+            const exitPrice = storedNumber(responseData.exitPrice);
+            const exitPipSize = storedNumber(responseData.exitPipSize);
+            const exitDigit = storedNumber(responseData.exitDigit);
+            const exitEpoch = storedNumber(responseData.exitEpoch);
+            if (
+              exitPrice === null ||
+              exitPipSize === null ||
+              exitDigit === null ||
+              !Number.isInteger(exitDigit) ||
+              exitDigit < 0 ||
+              exitDigit > 9 ||
+              exitEpoch === null
+            ) {
+              throw new Error('The Real wallet returned an incomplete simulated settlement.');
+            }
+            settledExitTick = {
+              symbol: trade.symbol,
+              quote: exitPrice,
+              pipSize: exitPipSize,
+              epoch: exitEpoch,
+            };
+            settledExitDigit = exitDigit;
+            resultData = responseData;
+          } else {
+            const { data, error } = await supabase.rpc('marketpilot_settle_demo_practice_trade', {
+              p_trade_id: trade.id,
+              p_account_type: trade.accountType,
+              p_exit_price: exitTick.quote,
+              p_exit_pip_size: exitTick.pipSize,
+              p_exit_digit: getLastDigit(exitTick),
+              p_exit_epoch: exitTick.epoch,
+            });
+            if (error) throw new Error(`Supabase could not settle this Demo trade: ${error.message}`);
+            resultData = data;
+          }
+
+          let settlement = parseSettlementResult(resultData);
           if (!settlement) {
-            const result = data && typeof data === 'object' && !Array.isArray(data)
-              ? data as Record<string, unknown>
-              : null;
+            const result = isRecord(resultData) ? resultData : null;
             if (
               result?.outcomeSource === 'test_simulation' &&
               (result.status === 'won' || result.status === 'lost')
@@ -1137,7 +1107,7 @@ export function MarketPilotDashboard() {
               return;
             }
 
-            const balance = storedNumber(result?.balance ?? data);
+            const balance = storedNumber(result?.balance ?? resultData);
             if (balance === null || balance < 0) {
               throw new Error(
                 'Supabase returned no valid wallet balance for this settlement. Confirm migration 20261123192000_marketpilot_remove_simulated_outcomes.sql was applied to the project configured in this app.',
@@ -1158,6 +1128,7 @@ export function MarketPilotDashboard() {
           if (!settlement || settlement.balance < 0) {
             throw new Error('The database returned a balance but did not save a completed trade result.');
           }
+          settlementExitTicksRef.current.delete(settlementKey);
           if (authUserIdRef.current === userId) {
             setWalletBalances((current) => current
               ? { ...current, [trade.accountType]: settlement.balance }
@@ -1166,10 +1137,10 @@ export function MarketPilotDashboard() {
               ...item,
               elapsed: trade.duration,
               status: settlement.status === 'won' ? 'Won' : 'Lost',
-              exitPrice: exitTick.quote,
-              exitPipSize: exitTick.pipSize,
-              exitDigit: getLastDigit(exitTick),
-              exitEpoch: exitTick.epoch,
+              exitPrice: settledExitTick.quote,
+              exitPipSize: settledExitTick.pipSize,
+              exitDigit: settledExitDigit,
+              exitEpoch: settledExitTick.epoch,
               payout: settlement.payout,
               profit: settlement.profit,
             } : item));
@@ -1177,19 +1148,19 @@ export function MarketPilotDashboard() {
               showDigitExitHighlight({
                 tradeId: trade.id,
                 symbol: trade.symbol,
-                digit: getLastDigit(exitTick),
+                digit: settledExitDigit,
                 outcome: settlement.status === 'won' ? 'win' : 'loss',
               });
             }
             if (trade.accountType === activeWallet) setTradeActionError('');
           }
         } catch (error) {
-          console.error('MarketPilot Demo trade settlement failed.', error);
+          console.error('MarketPilot simulated trade settlement failed.', error);
           if (authUserIdRef.current === userId && trade.accountType === activeWallet) {
             setTradeActionError(
               error instanceof Error
                 ? error.message
-                : 'Trade settlement failed. Check the browser console for details.',
+                : 'Trade settlement failed. It will retry automatically.',
             );
           }
         } finally {
@@ -1376,51 +1347,117 @@ export function MarketPilotDashboard() {
       !walletBalances ||
       walletLoading ||
       walletError ||
-      activeWallet !== 'demo' ||
       tradeQuote.askPrice > activeWalletBalance ||
       !stakeIsValid ||
       !durationIsValid ||
       (hasDigitBarrier && !digitIsValid) ||
       openingTradeRef.current
     ) return;
+    const tradeAccount = activeWallet;
     const tradeDuration = durationValue;
-    tradeCounter.current += 1;
-    const tradeId = `${Date.now()}-${tradeCounter.current}`;
+    if (tradeAccount === 'demo') tradeCounter.current += 1;
+    let tradeId = tradeAccount === 'demo' ? `${Date.now()}-${tradeCounter.current}` : '';
+    let entryTick = latestLiveTick;
+    let entryDigit = tradeAccount === 'real'
+      ? getMarketPilotTickDigit(latestLiveTick)
+      : getLastDigit(latestLiveTick);
+    let entrySerial = market.getTickSerial(latestLiveTick);
+    let payout = tradeQuote.payout;
     const typeLabel = CONTRACT_LABELS[type];
     openingTradeRef.current = true;
     setOpeningTrade(true);
     setTradeActionError('');
     const userId = authUser.id;
+    let balance: number | null = null;
     try {
-      const { data, error } = await getSupabaseBrowserClient().rpc('marketpilot_open_practice_trade', {
-        p_trade_id: tradeId,
-        p_account_type: activeWallet,
-        p_symbol: selectedMarket.symbol,
-        p_contract_type: type,
-        p_barrier: hasDigitBarrier ? digitValue : null,
-        p_duration: tradeDuration,
-        p_stake: tradeQuote.askPrice,
-        p_quoted_payout: tradeQuote.payout,
-        p_entry_price: latestLiveTick.quote,
-        p_entry_pip_size: latestLiveTick.pipSize,
-        p_entry_digit: getLastDigit(latestLiveTick),
-        p_entry_epoch: latestLiveTick.epoch,
-      });
-      if (error) {
-        if (error.message.includes('Insufficient wallet balance')) {
-          throw new Error('The selected wallet does not have enough balance for this stake.');
+      if (tradeAccount === 'real') {
+        const response = await fetch('/api/trading/real/open', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            symbol: selectedMarket.symbol,
+            contractType: type,
+            barrier: hasDigitBarrier ? digitValue : null,
+            duration: tradeDuration,
+            stake: tradeQuote.askPrice,
+            entryPrice: latestLiveTick.quote,
+            entryPipSize: latestLiveTick.pipSize,
+            entryEpoch: latestLiveTick.epoch,
+          }),
+        });
+        const result: unknown = await response.json();
+        if (!response.ok) {
+          throw new Error(isRecord(result) && typeof result.error === 'string'
+            ? result.error
+            : 'The Real wallet could not open this simulated trade.');
         }
-        throw new Error('The wallet could not open this demo trade. Check the wallet migration and try again.');
+        if (!isRecord(result)) throw new Error('The Real wallet returned an invalid simulated trade.');
+        const returnedTradeId = result.tradeId;
+        const returnedBalance = storedNumber(result.balance);
+        const returnedPayout = storedNumber(result.payout);
+        const returnedEntryPrice = storedNumber(result.entryPrice);
+        const returnedEntryPipSize = storedNumber(result.entryPipSize);
+        const returnedEntryDigit = storedNumber(result.entryDigit);
+        const returnedEntryEpoch = storedNumber(result.entryEpoch);
+        if (
+          typeof returnedTradeId !== 'string' ||
+          returnedBalance === null ||
+          returnedBalance < 0 ||
+          returnedPayout === null ||
+          returnedEntryPrice === null ||
+          returnedEntryPipSize === null ||
+          returnedEntryDigit === null ||
+          !Number.isInteger(returnedEntryDigit) ||
+          returnedEntryDigit < 0 ||
+          returnedEntryDigit > 9 ||
+          returnedEntryEpoch === null
+        ) {
+          throw new Error('The Real wallet returned incomplete simulated trade details.');
+        }
+        tradeId = returnedTradeId;
+        balance = returnedBalance;
+        payout = returnedPayout;
+        entryTick = {
+          symbol: selectedMarket.symbol,
+          quote: returnedEntryPrice,
+          pipSize: returnedEntryPipSize,
+          epoch: returnedEntryEpoch,
+        };
+        entryDigit = returnedEntryDigit;
+        if (getMarketPilotTickDigit(entryTick) !== returnedEntryDigit) {
+          throw new Error('The saved entry digit does not match the MarketPilot tick digit.');
+        }
+      } else {
+        const { data, error } = await getSupabaseBrowserClient().rpc('marketpilot_open_practice_trade', {
+          p_trade_id: tradeId,
+          p_account_type: tradeAccount,
+          p_symbol: selectedMarket.symbol,
+          p_contract_type: type,
+          p_barrier: hasDigitBarrier ? digitValue : null,
+          p_duration: tradeDuration,
+          p_stake: tradeQuote.askPrice,
+          p_quoted_payout: tradeQuote.payout,
+          p_entry_price: latestLiveTick.quote,
+          p_entry_pip_size: latestLiveTick.pipSize,
+          p_entry_digit: getLastDigit(latestLiveTick),
+          p_entry_epoch: latestLiveTick.epoch,
+        });
+        if (error) {
+          if (error.message.includes('Insufficient wallet balance')) {
+            throw new Error('The selected wallet does not have enough balance for this stake.');
+          }
+          throw new Error('The wallet could not open this Demo trade. Check the wallet migration and try again.');
+        }
+        balance = storedNumber(data);
       }
       if (authUserIdRef.current !== userId) return;
-      const balance = storedNumber(data);
       if (balance === null || balance < 0) throw new Error('The wallet returned an invalid balance.');
-      setWalletBalances((current) => current ? { ...current, [activeWallet]: balance } : current);
+      setWalletBalances((current) => current ? { ...current, [tradeAccount]: balance } : current);
       setContractType(type);
       if (type.startsWith('DIGIT')) clearDigitExitHighlight();
       setTrades((previous) => [{
         id: tradeId,
-        accountType: activeWallet,
+        accountType: tradeAccount,
         symbol: selectedMarket.symbol,
         contractType: type,
         contractLabel: `${typeLabel}${hasDigitBarrier ? ` ${digitValue}` : ''}`,
@@ -1428,18 +1465,20 @@ export function MarketPilotDashboard() {
         duration: tradeDuration,
         durationUnit: durationLimits.unit,
         stake: tradeQuote.askPrice,
-        quotedPayout: tradeQuote.payout,
-        entryPrice: latestLiveTick.quote,
-        entryPipSize: latestLiveTick.pipSize,
-        entryDigit: getLastDigit(latestLiveTick),
-        entryEpoch: latestLiveTick.epoch,
-        entrySerial: market.tickSerial,
+        quotedPayout: payout,
+        entryPrice: entryTick.quote,
+        entryPipSize: entryTick.pipSize,
+        entryDigit,
+        entryEpoch: entryTick.epoch,
+        entrySerial,
         elapsed: 0,
         status: 'Open' as const,
       }, ...previous].slice(0, 100));
     } catch (error) {
       if (authUserIdRef.current === userId) {
-        setTradeActionError(error instanceof Error ? error.message : 'The demo trade could not be opened.');
+        setTradeActionError(error instanceof Error
+          ? error.message
+          : `The ${tradeAccount === 'real' ? 'Real simulated' : 'Demo'} trade could not be opened.`);
       }
     } finally {
       openingTradeRef.current = false;
@@ -1533,7 +1572,7 @@ export function MarketPilotDashboard() {
     <div
       className={`contract-action-pair contract-action-pair--${placement}`}
       role="group"
-      aria-label={`${kindLabels[kind]} demo trade actions`}
+      aria-label={`${kindLabels[kind]} ${activeWallet} simulated trade actions`}
     >
       {contractTypes.map((type) => {
         const supported = availableChoices.includes(type);
@@ -1562,7 +1601,6 @@ export function MarketPilotDashboard() {
           !walletBalances ||
           walletLoading ||
           !!walletError ||
-          activeWallet !== 'demo' ||
           insufficientBalance ||
           openingTrade;
 
@@ -1573,7 +1611,7 @@ export function MarketPilotDashboard() {
             type="button"
             onClick={() => startPractice(type, actionQuote)}
             disabled={disabled}
-            title={`Start ${actionLabel} demo trade`}
+            title={`Start ${actionLabel} ${activeWallet} simulated trade`}
             aria-label={actionQuote
               ? `${actionLabel}. Payout ${formatMoney(actionQuote.payout)}, including ${formatMoney(actionQuote.askPrice)} stake and ${formatProfit(actionQuote.payout - actionQuote.askPrice)} profit.`
               : `${actionLabel}.`}
@@ -1666,7 +1704,7 @@ export function MarketPilotDashboard() {
           />
           <div className={`connection-pill ${market.connectionState}`}>
             {market.connectionState === 'connected' ? <Wifi size={14} /> : <WifiOff size={14} />}
-            <span>{market.connectionState === 'connected' ? 'Market data live' : market.connectionState}</span>
+            <span>{market.connectionState === 'connected' ? 'Live Deriv prices' : market.connectionState}</span>
           </div>
         </div>
       </header>
@@ -2004,7 +2042,7 @@ export function MarketPilotDashboard() {
           )}
           <section
             className="cashier-transaction-section"
-            aria-label={cashierWalletIsDemo ? 'Market volatility list' : 'Transaction history'}
+            aria-label={cashierWalletIsDemo ? 'Synthetic market list' : 'Transaction history'}
           >
             {!cashierWalletIsDemo && (
               <div className="cashier-section-heading">
@@ -2105,17 +2143,19 @@ export function MarketPilotDashboard() {
 
       <div className={`page-content${currentPage !== 'hub' ? ' is-inactive-page' : ''}`}>
         <div className="mobile-page-heading">Traders Hub</div>
-        {(market.connectionState !== 'connected' || market.error) && (
-          <div className="connection-alert" role="status">
-            <WifiOff size={17} />
-            <div>
-              <strong>{market.connectionState === 'connected' ? 'Market data issue' : 'Market data connection unavailable'}</strong>
-              <span>
-                {market.error || 'Connecting to live market data. Prices and statistics are not simulated.'}
-              </span>
-            </div>
+        <div className="connection-alert" role="status">
+          {market.connectionState === 'connected' ? <Wifi size={17} /> : <WifiOff size={17} />}
+          <div>
+            <strong>
+              {market.connectionState === 'connected' ? 'Live Deriv market data' : 'Deriv market data unavailable'}
+            </strong>
+            <span>
+              {market.connectionState === 'connected'
+                ? 'Deriv prices stay unchanged on the chart. Real-wallet trades append a stable pseudo-random MarketPilot digit to each tick; Demo trades use Deriv’s published digits.'
+                : `${market.error || 'Waiting for a live Deriv connection.'} The chart will reconnect automatically; it will not substitute synthetic prices.`}
+            </span>
           </div>
-        )}
+        </div>
 
         <div className="workspace-grid">
           <div className="primary-column">
@@ -2380,7 +2420,7 @@ export function MarketPilotDashboard() {
               {trades.some((trade) => trade.accountType === activeWallet && trade.status === 'Open' && trade.symbol === market.selectedSymbol) && (
                 <div className="open-trade-note">
                   <span className="loading-dot" />
-                  {trades.filter((trade) => trade.accountType === activeWallet && trade.status === 'Open' && trade.symbol === market.selectedSymbol).length} open demo trade(s) monitoring incoming ticks
+                  {trades.filter((trade) => trade.accountType === activeWallet && trade.status === 'Open' && trade.symbol === market.selectedSymbol).length} open simulated trade(s) awaiting settlement
                 </div>
               )}
             </section>
@@ -2402,7 +2442,7 @@ function TradeRow({ trade, currency }: { trade: PracticeTrade; currency: string 
       <div className="trade-info">
         <strong>{trade.symbol}<span>{trade.contractLabel}</span><span>{trade.accountType === 'demo' ? 'DEMO' : 'REAL'}</span></strong>
         <small>
-          {trade.duration}{trade.durationUnit} · Entry {trade.entryPrice.toFixed(entryPrecision)} · digit {trade.entryDigit} · {localTime(trade.entryEpoch)} UTC
+          {trade.duration}{trade.durationUnit} · Entry {trade.entryPrice.toFixed(entryPrecision)}{trade.accountType === 'real' ? trade.entryDigit : ''} · {trade.accountType === 'real' ? 'MarketPilot digit' : 'digit'} {trade.entryDigit} · {localTime(trade.entryEpoch)} UTC
         </small>
       </div>
       <div className="trade-result">
@@ -2417,7 +2457,7 @@ function TradeRow({ trade, currency }: { trade: PracticeTrade; currency: string 
               {(trade.profit ?? 0) > 0 ? '+' : ''}{(trade.profit ?? 0).toFixed(2)} {currency}
             </strong>
             <small>
-              Actual market exit {trade.exitPrice?.toFixed(exitPrecision) ?? '—'} · digit {trade.exitDigit ?? '—'} · {trade.exitEpoch ? `${localTime(trade.exitEpoch)} UTC` : ''}
+              Market exit {trade.exitPrice?.toFixed(exitPrecision) ?? '—'}{trade.accountType === 'real' && trade.exitDigit !== undefined ? trade.exitDigit : ''} · {trade.accountType === 'real' ? 'MarketPilot digit' : 'digit'} {trade.exitDigit ?? '—'} · {trade.exitEpoch ? `${localTime(trade.exitEpoch)} UTC` : ''}
             </small>
           </>
         )}

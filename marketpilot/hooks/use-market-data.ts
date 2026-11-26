@@ -2,9 +2,9 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  DerivClient,
-  getDerivWsUrl,
+  DerivPublicClient,
   normalizeContracts,
+  normalizePipSize,
   normalizeSymbols,
   normalizeTick,
   VOLATILITY_SYMBOLS,
@@ -15,7 +15,7 @@ import {
   type MarketCandle,
   type MarketSymbol,
   type MarketTick,
-} from '@/lib/deriv-client';
+} from '@/lib/market-data';
 import { mergeCandles, mergeTicks } from '@/lib/practice';
 
 export type ChartInterval = '1m' | '5m' | '15m' | '30m' | '1h';
@@ -27,6 +27,7 @@ const intervalSeconds: Record<ChartInterval, number> = {
   '1h': 3_600,
 };
 const chartHistoryPeriods = 100;
+const supportedSymbols = new Set<string>(VOLATILITY_SYMBOLS.map(({ symbol }) => symbol));
 
 export function useMarketData() {
   const [connectionState, setConnectionState] = useState<ConnectionState>('connecting');
@@ -44,22 +45,33 @@ export function useMarketData() {
   const [tickSerial, setTickSerial] = useState(0);
   const [tickEvents, setTickEvents] = useState<Array<{ serial: number; tick: MarketTick }>>([]);
   const tickSerialRef = useRef(0);
+  const tickEventsRef = useRef<Array<{ serial: number; tick: MarketTick }>>([]);
   const latestTickRef = useRef<MarketTick | null>(null);
-  const clientRef = useRef<DerivClient | null>(null);
+  const clientRef = useRef<DerivPublicClient | null>(null);
 
   const onMessage = useCallback((message: DerivMessage) => {
     if (message.msg_type !== 'tick') return;
     const tick = normalizeTick(message.tick);
-    if (!tick) return;
+    if (!tick || !supportedSymbols.has(tick.symbol)) return;
     const serial = ++tickSerialRef.current;
     latestTickRef.current = tick;
     setTickSerial(serial);
-    setTickEvents((current) => [...current.slice(-1_999), { serial, tick }]);
+    tickEventsRef.current = [...tickEventsRef.current.slice(-1_999), { serial, tick }];
+    setTickEvents(tickEventsRef.current);
     setLiveTicks((current) => [...current.slice(-1_999), tick]);
   }, []);
+  const getCurrentTickSerial = useCallback(() => tickSerialRef.current, []);
+  const getTickSerial = useCallback((target: MarketTick) => (
+    [...tickEventsRef.current].reverse().find(({ tick }) => (
+      tick.symbol === target.symbol &&
+      tick.epoch === target.epoch &&
+      tick.quote === target.quote &&
+      tick.pipSize === target.pipSize
+    ))?.serial ?? tickSerialRef.current
+  ), []);
 
   useEffect(() => {
-    const client = new DerivClient(getDerivWsUrl(), setConnectionState);
+    const client = new DerivPublicClient(setConnectionState);
     clientRef.current = client;
     const unsubscribe = client.listen(onMessage);
     return () => {
@@ -69,60 +81,94 @@ export function useMarketData() {
     };
   }, [onMessage]);
 
-  useEffect(() => {
+  const request = useCallback((payload: Record<string, unknown>) => {
     const client = clientRef.current;
-    if (!client || connectionState !== 'connected') return;
-    client.request({ active_symbols: 'brief' }).then((response) => {
-      const activeSymbols = normalizeSymbols(response.active_symbols);
-      const activeByCode = new Map(activeSymbols.map((symbol) => [symbol.symbol, symbol]));
-      const nextSymbols = VOLATILITY_SYMBOLS.flatMap((item) => {
-        const providerSymbol = activeByCode.get(item.symbol);
-        return providerSymbol ? [{ ...providerSymbol, name: item.name }] : [];
-      });
-      if (!nextSymbols.length) {
-        setSymbols([]);
-        setSelectedSymbol('');
-        setError('Market data is not currently returning any of the ten supported volatility indices.');
-        return;
-      }
-      setSymbols(nextSymbols);
-      setSelectedSymbol((current) => {
-        if (current && nextSymbols.some((symbol) => symbol.symbol === current)) return current;
-        const defaultSymbol = nextSymbols.find((symbol) => symbol.symbol === 'R_10');
-        return (nextSymbols.find((symbol) => symbol.exchangeOpen && !symbol.suspended) ?? defaultSymbol ?? nextSymbols[0]).symbol;
-      });
-      setError('');
-    }).catch((requestError: unknown) => {
-      setError(requestError instanceof Error ? requestError.message : 'Unable to load market symbols.');
-    });
-  }, [connectionState]);
+    return client
+      ? client.request(payload)
+      : Promise.reject(new Error('Deriv market data is not connected.'));
+  }, []);
 
   useEffect(() => {
-    const client = clientRef.current;
-    if (!client || connectionState !== 'connected' || !selectedSymbol) return;
+    if (connectionState === 'connecting') {
+      setError('Connecting to Deriv live market data…');
+      return;
+    }
+    if (connectionState === 'reconnecting') {
+      setError('Deriv market data disconnected. Reconnecting automatically…');
+      return;
+    }
+    if (connectionState === 'disconnected') {
+      setError('Deriv market data is disconnected.');
+      return;
+    }
+
     let cancelled = false;
-    setLiveTicks([]);
-    setContracts([]);
-    client.request({ contracts_for: selectedSymbol }).then((response) => {
-      if (!cancelled) setContracts(normalizeContracts(response.contracts_for));
+    void request({ active_symbols: 'brief' }).then((response) => {
+      if (cancelled) return;
+      const activeSymbols = normalizeSymbols(response.active_symbols)
+        .filter((symbol) => supportedSymbols.has(symbol.symbol));
+      if (!activeSymbols.length) {
+        setSymbols([]);
+        setSelectedSymbol('');
+        setError('Deriv did not return any of the supported volatility indices.');
+        return;
+      }
+
+      setSymbols(activeSymbols);
+      setSelectedSymbol((current) => (
+        activeSymbols.some((symbol) => symbol.symbol === current)
+          ? current
+          : activeSymbols.find((symbol) => symbol.symbol === 'R_10')?.symbol ?? activeSymbols[0].symbol
+      ));
+      setError('');
     }).catch((requestError: unknown) => {
-      if (!cancelled) setError(requestError instanceof Error ? requestError.message : 'Unable to load contract conditions.');
+      if (!cancelled) {
+        setError(requestError instanceof Error
+          ? requestError.message
+          : 'Unable to load active markets from Deriv.');
+      }
     });
+
     return () => {
       cancelled = true;
     };
-  }, [connectionState, selectedSymbol]);
+  }, [connectionState, request]);
 
   useEffect(() => {
-    const client = clientRef.current;
-    if (!client || connectionState !== 'connected' || !selectedSymbol) return;
+    if (connectionState !== 'connected' || !selectedSymbol) return;
+    let cancelled = false;
+    setContracts([]);
+    void request({ contracts_for: selectedSymbol }).then((response) => {
+      if (cancelled) return;
+      const nextContracts = normalizeContracts(response.contracts_for);
+      setContracts(nextContracts);
+      if (!nextContracts.length) setError(`Deriv returned no contract conditions for ${selectedSymbol}.`);
+    }).catch((requestError: unknown) => {
+      if (!cancelled) {
+        setError(requestError instanceof Error
+          ? requestError.message
+          : `Unable to load Deriv contract conditions for ${selectedSymbol}.`);
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [connectionState, request, selectedSymbol]);
+
+  useEffect(() => {
+    if (connectionState !== 'connected' || !selectedSymbol) return;
     let cancelled = false;
     const historyKey = `${selectedSymbol}:${interval}`;
-    const start = Math.floor(Date.now() / 1_000) - intervalSeconds[interval] * chartHistoryPeriods;
+    const start = Math.max(
+      0,
+      Math.floor(Date.now() / 1_000) - intervalSeconds[interval] * chartHistoryPeriods,
+    );
     setHistoryTicks([]);
     setLoadedTickHistoryKey('');
-    client.request({
+    void request({
       ticks_history: selectedSymbol,
+      count: 1_000,
       start,
       end: 'latest',
       style: 'ticks',
@@ -131,53 +177,60 @@ export function useMarketData() {
       if (cancelled) return;
       const history = response.history as { prices?: unknown; times?: unknown } | undefined;
       if (!Array.isArray(history?.prices) || !Array.isArray(history.times)) {
-        setHistoryTicks([]);
-        setLoadedTickHistoryKey(historyKey);
-        setError('No historical market ticks were returned for this interval.');
-        return;
+        throw new Error('Deriv did not return valid historical prices for this chart.');
       }
+      const symbolPipSize = symbols.find((symbol) => symbol.symbol === selectedSymbol)?.pipSize ?? 0.01;
+      const pipSize = normalizePipSize(response.pip_size) ?? symbolPipSize;
       const prices: unknown[] = history.prices;
       const times: unknown[] = history.times;
-      const price = response.pip_size;
-      const pipSize = typeof price === 'number'
-        ? price
-        : symbols.find((symbol) => symbol.symbol === selectedSymbol)?.pipSize ?? 0.01;
       const ticks = prices.flatMap((quote, index) => {
         const epoch = times[index];
-        if (typeof quote !== 'number' || typeof epoch !== 'number') return [];
+        if (
+          typeof quote !== 'number' ||
+          !Number.isFinite(quote) ||
+          typeof epoch !== 'number' ||
+          !Number.isInteger(epoch)
+        ) return [];
         return [{ symbol: selectedSymbol, quote, epoch, pipSize }];
       });
+      if (!ticks.length) throw new Error('Deriv returned no usable historical prices for this chart.');
       setHistoryTicks(ticks);
       setLoadedTickHistoryKey(historyKey);
       setError('');
     }).catch((requestError: unknown) => {
       if (!cancelled) {
         setLoadedTickHistoryKey(historyKey);
-        setError(requestError instanceof Error ? requestError.message : 'Unable to load historical market data.');
+        setError(requestError instanceof Error
+          ? requestError.message
+          : 'Unable to load Deriv chart history.');
       }
     });
+
     return () => {
       cancelled = true;
     };
-  }, [connectionState, interval, selectedSymbol, symbols]);
+  }, [connectionState, interval, request, selectedSymbol, symbols]);
 
   useEffect(() => {
-    const client = clientRef.current;
     if (chartStyle !== 'candlestick') {
       setHistoryCandles([]);
       setLoadedCandleHistoryKey('');
       return;
     }
-    if (!client || connectionState !== 'connected' || !selectedSymbol) return;
+    if (connectionState !== 'connected' || !selectedSymbol) return;
 
     let cancelled = false;
     const historyKey = `${selectedSymbol}:${interval}`;
     const granularity = intervalSeconds[interval];
-    const start = Math.floor(Date.now() / 1_000) - granularity * chartHistoryPeriods;
+    const start = Math.max(
+      0,
+      Math.floor(Date.now() / 1_000) - granularity * chartHistoryPeriods,
+    );
     setHistoryCandles([]);
     setLoadedCandleHistoryKey('');
-    client.request({
+    void request({
       ticks_history: selectedSymbol,
+      count: chartHistoryPeriods,
       start,
       end: 'latest',
       style: 'candles',
@@ -186,25 +239,25 @@ export function useMarketData() {
     }).then((response) => {
       if (cancelled) return;
       if (!Array.isArray(response.candles)) {
-        setHistoryCandles([]);
-        setLoadedCandleHistoryKey(historyKey);
-        setError('No historical market candles were returned for this interval.');
-        return;
+        throw new Error('Deriv did not return valid historical candles for this chart.');
       }
-
-      const responsePipSize = response.pip_size;
-      const pipSize = typeof responsePipSize === 'number'
-        ? responsePipSize
-        : symbols.find((symbol) => symbol.symbol === selectedSymbol)?.pipSize ?? 0.01;
-      const candles = (response.candles as unknown[]).flatMap((value) => {
-        if (!value || typeof value !== 'object') return [];
+      const pipSize = normalizePipSize(response.pip_size)
+        ?? symbols.find((symbol) => symbol.symbol === selectedSymbol)?.pipSize
+        ?? 0.01;
+      const candles = response.candles.flatMap((value) => {
+        if (!value || typeof value !== 'object' || Array.isArray(value)) return [];
         const candle = value as Record<string, unknown>;
         if (
           typeof candle.epoch !== 'number' ||
+          !Number.isInteger(candle.epoch) ||
           typeof candle.open !== 'number' ||
+          !Number.isFinite(candle.open) ||
           typeof candle.high !== 'number' ||
+          !Number.isFinite(candle.high) ||
           typeof candle.low !== 'number' ||
-          typeof candle.close !== 'number'
+          !Number.isFinite(candle.low) ||
+          typeof candle.close !== 'number' ||
+          !Number.isFinite(candle.close)
         ) return [];
         return [{
           symbol: selectedSymbol,
@@ -216,42 +269,55 @@ export function useMarketData() {
           pipSize,
         }];
       });
+      if (!candles.length) throw new Error('Deriv returned no usable historical candles for this chart.');
       setHistoryCandles(candles);
       setLoadedCandleHistoryKey(historyKey);
-      setError(candles.length ? '' : 'No historical market candles were returned for this interval.');
+      setError('');
     }).catch((requestError: unknown) => {
       if (!cancelled) {
         setLoadedCandleHistoryKey(historyKey);
-        setError(requestError instanceof Error ? requestError.message : 'Unable to load historical market candles.');
+        setError(requestError instanceof Error
+          ? requestError.message
+          : 'Unable to load Deriv chart candles.');
       }
     });
 
     return () => {
       cancelled = true;
     };
-  }, [chartStyle, connectionState, interval, selectedSymbol, symbols]);
+  }, [chartStyle, connectionState, interval, request, selectedSymbol, symbols]);
 
   useEffect(() => {
-    const client = clientRef.current;
-    if (!client || connectionState !== 'connected' || !selectedSymbol) return;
+    if (connectionState !== 'connected' || !symbols.length) return;
     let cancelled = false;
     let subscriptionId: string | null = null;
-    client.request({ ticks: selectedSymbol, subscribe: 1 }).then((response) => {
+    void request({
+      ticks: symbols.map((symbol) => symbol.symbol),
+      subscribe: 1,
+    }).then((response) => {
       const subscription = response.subscription as { id?: unknown } | undefined;
-      if (typeof subscription?.id !== 'string') return;
+      if (typeof subscription?.id !== 'string') {
+        if (!cancelled) setError('Deriv did not confirm the live price subscription.');
+        return;
+      }
       if (cancelled) {
-        void client.request({ forget: subscription.id }).catch(() => undefined);
+        void request({ forget: subscription.id }).catch(() => undefined);
       } else {
         subscriptionId = subscription.id;
       }
     }).catch((requestError: unknown) => {
-      if (!cancelled) setError(requestError instanceof Error ? requestError.message : 'Unable to subscribe to live ticks.');
+      if (!cancelled) {
+        setError(requestError instanceof Error
+          ? requestError.message
+          : 'Unable to subscribe to Deriv live prices.');
+      }
     });
+
     return () => {
       cancelled = true;
-      if (subscriptionId) void client.request({ forget: subscriptionId }).catch(() => undefined);
+      if (subscriptionId) void request({ forget: subscriptionId }).catch(() => undefined);
     };
-  }, [connectionState, selectedSymbol]);
+  }, [connectionState, request, symbols]);
 
   const latestLiveEpoch = [...liveTicks].reverse().find((tick) => tick.symbol === selectedSymbol)?.epoch
     ?? historyTicks.at(-1)?.epoch
@@ -281,12 +347,6 @@ export function useMarketData() {
   const chartLoading = chartStyle === 'candlestick'
     ? loadedCandleHistoryKey !== historyKey
     : loadedTickHistoryKey !== historyKey;
-  const request = useCallback((payload: Record<string, unknown>) => {
-    const client = clientRef.current;
-    return client
-      ? client.request(payload)
-      : Promise.reject(new Error('Market data is not connected.'));
-  }, []);
 
   return {
     connectionState,
@@ -306,8 +366,9 @@ export function useMarketData() {
     error,
     setError,
     tickSerial,
+    getCurrentTickSerial,
+    getTickSerial,
     tickEvents,
     latestTick: latestTickRef.current,
-    request,
   };
 }

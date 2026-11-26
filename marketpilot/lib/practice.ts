@@ -1,4 +1,4 @@
-import { getLastDigit, type MarketCandle, type MarketTick } from './deriv-client';
+import { getLastDigit, type MarketCandle, type MarketTick } from './market-data';
 import type { WalletAccount } from './wallets';
 
 export type PracticeTrade = {
@@ -61,6 +61,21 @@ export function getFixedContractPayout(
   if (profitAtOneUsd === undefined) return null;
 
   return Number((stake * (1 + profitAtOneUsd)).toFixed(2));
+}
+
+export function getSimulatedContractPayout(
+  contractType: string,
+  barrier: number | null,
+  stake: number,
+): number | null {
+  const fixedPayout = getFixedContractPayout(contractType, barrier, stake);
+  if (fixedPayout !== null) return fixedPayout;
+  if (contractType === 'DIGITMATCH') return Number((stake * 9.5).toFixed(2));
+  if (contractType === 'DIGITDIFF') return Number((stake * 1.05).toFixed(2));
+
+  if (contractType === 'DIGITOVER' && barrier === 0) return Number((stake * 1.05).toFixed(2));
+  if (contractType === 'DIGITUNDER' && barrier === 9) return Number((stake * 1.05).toFixed(2));
+  return null;
 }
 
 export function contractWon(
