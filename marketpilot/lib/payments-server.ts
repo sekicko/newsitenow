@@ -76,22 +76,15 @@ export async function verifyAndSettleMegaPayDeposit(
     : '';
   const transactionCode = result.TransactionCode ?? result.transaction_code;
 
-  const hasCompletedStatus = ['completed', 'complete', 'success', 'successful'].includes(providerStatus);
+  const hasCompletedStatus = providerStatus === 'completed';
   const hasSuccessfulTransactionCode = transactionCode === '0' || transactionCode === 0;
-  const hasValidTransactionCode = transactionCode === undefined || transactionCode === null || hasSuccessfulTransactionCode;
-  const hasTransactionId = typeof (result.TransactionID ?? result.transaction_id) === 'string';
-  const isExplicitlyPending = ['pending', 'processing', 'initiated', 'queued', 'in progress'].includes(providerStatus);
-  if (
-    (hasCompletedStatus && hasValidTransactionCode) ||
-    (!isExplicitlyPending && hasSuccessfulTransactionCode && hasTransactionId)
-  ) {
+  if (hasCompletedStatus && hasSuccessfulTransactionCode) {
     const amountKes = numberValue(result.TransactionAmount ?? result.transaction_amount);
     const providerTransactionId = result.TransactionID ?? result.transaction_id;
     const receipt = result.TransactionReceipt ?? result.transaction_receipt;
     const phone = result.Msisdn ?? result.msisdn;
     if (
       amountKes === null ||
-      (!(hasCompletedStatus && hasValidTransactionCode) && !hasSuccessfulTransactionCode) ||
       typeof providerTransactionId !== 'string' ||
       providerTransactionId.trim().length < 1 ||
       providerTransactionId.length > 200 ||
@@ -119,11 +112,26 @@ export async function verifyAndSettleMegaPayDeposit(
       : { status: 'completed', balance };
   }
 
-  if (['failed', 'cancelled', 'canceled', 'declined', 'expired'].includes(providerStatus)) {
+  const resultCode = result.TransactionCode ?? result.transaction_code;
+  const hasFailedProviderStatus = ['failed', 'cancelled', 'canceled', 'declined', 'expired'].includes(providerStatus);
+  const hasFailedTransactionCode =
+    resultCode !== undefined &&
+    resultCode !== null &&
+    resultCode !== 0 &&
+    resultCode !== '0';
+  if (hasFailedProviderStatus || hasFailedTransactionCode) {
     const description = typeof result.ResultDesc === 'string'
       ? result.ResultDesc
-      : `MegaPay marked this payment ${providerStatus}.`;
+      : `The payment provider reported status ${providerStatus || String(resultCode)}.`;
     return markDepositFailed(admin, transaction.id, description);
+  }
+
+  if (timedOut) {
+    console.warn('Deposit confirmation reached its timeout without a final provider status.', {
+      providerStatus: providerStatus || null,
+      transactionCode: resultCode ?? null,
+      resultCode: result.ResultCode ?? result.result_code ?? null,
+    });
   }
 
   return timedOut

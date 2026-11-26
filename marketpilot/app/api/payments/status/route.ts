@@ -66,6 +66,9 @@ export async function POST(request: NextRequest) {
     });
   } catch (error) {
     console.error('MegaPay payment verification failed.', error);
-    return NextResponse.json({ status: 'pending' });
+    return NextResponse.json(
+      { error: 'Deposit confirmation could not be checked. The app will retry automatically.' },
+      { status: 502 },
+    );
   }
 }
