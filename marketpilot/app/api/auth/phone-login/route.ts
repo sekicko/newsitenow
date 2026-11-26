@@ -1,5 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 import { NextResponse, type NextRequest } from 'next/server';
+import { getSupabaseServerKey } from '@/lib/supabase/admin';
 import { createSupabaseServerClient } from '@/lib/supabase/server';
 
 const invalidCredentials = () =>
@@ -34,7 +35,7 @@ export async function POST(request: NextRequest) {
 
   const url = process.env.SUPABASE_URL?.trim();
   const publishableKey = process.env.SUPABASE_PUBLISHABLE_KEY?.trim();
-  const secretKey = process.env.SUPABASE_SECRET_KEY?.trim();
+  const secretKey = getSupabaseServerKey();
   if (!url || !publishableKey || !secretKey) {
     return NextResponse.json({ error: 'Phone sign-in is not configured on this server.' }, { status: 503 });
   }

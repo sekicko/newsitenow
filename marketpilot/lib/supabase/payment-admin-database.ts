@@ -43,7 +43,7 @@ export type PaymentAdminDatabase = {
       };
       marketpilot_payment_complete_deposit: {
         Args: {
-          p_request_id: string;
+          p_request_id: string | null;
           p_provider_transaction_id: string;
           p_receipt: string | null;
           p_amount_kes: number;
