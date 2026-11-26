@@ -378,6 +378,7 @@ export function MarketPilotDashboard() {
   const openingTradeRef = useRef(false);
   const settlingTradeIdsRef = useRef(new Set<string>());
   const cashierStatusChecksRef = useRef(new Set<string>());
+  const cashierStatusBatchRef = useRef(0);
   const digitExitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const clearDigitExitHighlight = useCallback(() => {
     if (digitExitTimerRef.current !== null) clearTimeout(digitExitTimerRef.current);
@@ -760,7 +761,6 @@ export function MarketPilotDashboard() {
       .filter((transaction) => transaction.type === 'deposit' && transaction.status === 'pending')
       .sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt))
       .map((transaction) => transaction.id)
-      .slice(0, 5)
       .join(',')
     : '';
 
@@ -768,8 +768,14 @@ export function MarketPilotDashboard() {
     if (!authUser?.id || !pendingDepositIds) return;
     const userId = authUser.id;
     const transactionIds = pendingDepositIds.split(',');
+    cashierStatusBatchRef.current = 0;
     const checkPendingDeposits = async () => {
-      await Promise.all(transactionIds.map(async (transactionId) => {
+      const start = cashierStatusBatchRef.current % transactionIds.length;
+      const batch = Array.from({ length: Math.min(5, transactionIds.length) }, (_, index) =>
+        transactionIds[(start + index) % transactionIds.length],
+      );
+      cashierStatusBatchRef.current = (start + batch.length) % transactionIds.length;
+      await Promise.all(batch.map(async (transactionId) => {
         if (cashierStatusChecksRef.current.has(transactionId)) return;
         cashierStatusChecksRef.current.add(transactionId);
         try {
