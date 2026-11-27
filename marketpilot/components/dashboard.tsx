@@ -1,9 +1,11 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent as ReactKeyboardEvent } from 'react';
+import Image from 'next/image';
 import {
   Activity,
   BarChart3,
+  Bot,
   ChevronDown,
   Clock3,
   History,
@@ -45,10 +47,17 @@ const kindLabels: Record<PracticeKind, string> = {
   'matches-differs': 'Matches / Differs',
   'rise-fall': 'Rise / Fall',
 };
+const aiContractChoices = (Object.entries(CONTRACT_TYPES) as [PracticeKind, string[]][])
+  .flatMap(([kind, types]) => types.map((type) => ({
+    kind,
+    type,
+    label: CONTRACT_LABELS[type],
+  })));
 
-type DashboardPage = 'hub' | 'cashier' | 'history' | 'settings';
+type DashboardPage = 'hub' | 'premium-bots' | 'cashier' | 'history' | 'settings';
 const sidebarItems = [
   { page: 'hub', label: 'Traders Hub', icon: Activity },
+  { page: 'premium-bots', label: 'Premium Bots', icon: Bot },
   { page: 'cashier', label: 'Cashier', icon: Wallet },
   { page: 'history', label: 'Trade History', icon: History },
   { page: 'settings', label: 'Settings', icon: Settings },
@@ -63,6 +72,31 @@ const contractDefaults: Record<PracticeKind, string> = {
 
 type PracticeQuote = { askPrice: number; payout: number };
 type TradeHistoryView = 'all' | 'open' | 'closed';
+type AiContractChoice = { kind: PracticeKind; type: string; label: string };
+type AiTradeSession = {
+  id: string;
+  accountType: WalletAccount;
+  symbol: string;
+  contractType: string;
+  barrier: number | null;
+  baseStake: number;
+  currentStake: number;
+  takeProfit: number;
+  stopLoss: number;
+  multiplier: number;
+  realizedProfit: number;
+  lastTradeId: string | null;
+  lastTickSerial: number;
+  pending: boolean;
+};
+type AiLimitNotification = { outcome: 'take-profit' | 'stop-loss'; netProfit: number };
+type TradeNotification = {
+  id: string;
+  outcome: 'won' | 'lost';
+  amount: number;
+  marketName: string;
+  contractLabel: string;
+};
 type DigitExitHighlight = {
   tradeId: string;
   symbol: string;
@@ -76,6 +110,7 @@ type CashierTransaction = {
   type: 'deposit' | 'withdrawal';
   status: 'completed' | 'pending' | 'declined' | 'failed';
   amount: number;
+  welcomeBonus?: number;
   createdAt: string;
 };
 
@@ -91,7 +126,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 async function loadCashierTransactions(userId: string): Promise<CashierTransaction[]> {
   const { data, error } = await getSupabaseBrowserClient()
     .from('marketpilot_transactions')
-    .select('id,transaction_type,status,amount_usd,created_at')
+    .select('id,transaction_type,status,amount_usd,welcome_bonus_usd,created_at')
     .eq('user_id', userId)
     .eq('account_type', 'real')
     .order('created_at', { ascending: false })
@@ -100,6 +135,7 @@ async function loadCashierTransactions(userId: string): Promise<CashierTransacti
 
   return (data ?? []).flatMap((row) => {
     const amount = storedNumber(row.amount_usd);
+    const welcomeBonus = storedNumber(row.welcome_bonus_usd);
     if (
       typeof row.id !== 'string' ||
       (row.transaction_type !== 'deposit' && row.transaction_type !== 'withdrawal') ||
@@ -113,6 +149,7 @@ async function loadCashierTransactions(userId: string): Promise<CashierTransacti
       type: row.transaction_type,
       status: row.status,
       amount,
+      welcomeBonus: welcomeBonus !== null && welcomeBonus > 0 ? welcomeBonus : undefined,
       createdAt: row.created_at,
     }];
   });
@@ -336,7 +373,7 @@ function TradeHistoryPanel({
 export function MarketPilotDashboard() {
   const market = useMarketData();
   const [authUser, setAuthUser] = useState<User | null>(null);
-  const [theme, setTheme] = useState<'dark' | 'light'>('dark');
+  const [theme, setTheme] = useState<'dark' | 'light'>('light');
   const [kind, setKind] = useState<PracticeKind>('over-under');
   const [contractType, setContractType] = useState(contractDefaults['over-under']);
   const [digit, setDigit] = useState('3');
@@ -349,7 +386,7 @@ export function MarketPilotDashboard() {
   const [alternativeQuoteLoading, setAlternativeQuoteLoading] = useState(false);
   const [alternativeQuoteError, setAlternativeQuoteError] = useState('');
   const [walletBalances, setWalletBalances] = useState<WalletBalances | null>(null);
-  const [activeWallet, setActiveWallet] = useState<WalletAccount>('demo');
+  const [activeWallet, setActiveWallet] = useState<WalletAccount>('real');
   const [walletLoading, setWalletLoading] = useState(false);
   const [walletError, setWalletError] = useState('');
   const [historyError, setHistoryError] = useState('');
@@ -360,7 +397,11 @@ export function MarketPilotDashboard() {
   const [cashierTransactions, setCashierTransactions] = useState<CashierTransaction[]>([]);
   const [cashierTransactionsOwner, setCashierTransactionsOwner] = useState<string | null>(null);
   const [cashierTransactionsLoading, setCashierTransactionsLoading] = useState(false);
-  const [cashierDepositSuccess, setCashierDepositSuccess] = useState<{ transactionId: string; amount: number } | null>(null);
+  const [cashierDepositSuccess, setCashierDepositSuccess] = useState<{
+    transactionId: string;
+    amount: number;
+    welcomeBonus: number;
+  } | null>(null);
   const [cashierDepositConfirmation, setCashierDepositConfirmation] = useState<'pending' | 'failed' | null>(null);
   const [cashierTrackedDepositId, setCashierTrackedDepositId] = useState<string | null>(null);
   const [cashierDepositCheckError, setCashierDepositCheckError] = useState('');
@@ -374,6 +415,17 @@ export function MarketPilotDashboard() {
   const [sidebarError, setSidebarError] = useState('');
   const [signingOut, setSigningOut] = useState(false);
   const [openingTrade, setOpeningTrade] = useState(false);
+  const [aiPanelOpen, setAiPanelOpen] = useState(false);
+  const [aiContractType, setAiContractType] = useState('DIGITOVER');
+  const [aiPredictionDigit, setAiPredictionDigit] = useState('3');
+  const [aiStake, setAiStake] = useState('1');
+  const [aiTakeProfit, setAiTakeProfit] = useState('5');
+  const [aiStopLoss, setAiStopLoss] = useState('5');
+  const [aiMultiplier, setAiMultiplier] = useState('2');
+  const [aiTradeSession, setAiTradeSession] = useState<AiTradeSession | null>(null);
+  const [aiTradeMessage, setAiTradeMessage] = useState('');
+  const [aiLimitNotification, setAiLimitNotification] = useState<AiLimitNotification | null>(null);
+  const [tradeNotifications, setTradeNotifications] = useState<TradeNotification[]>([]);
   const [trades, setTrades] = useState<PracticeTrade[]>([]);
   const [digitExitHighlight, setDigitExitHighlight] = useState<DigitExitHighlight | null>(null);
   const [activeTradeView, setActiveTradeView] = useState<TradeHistoryView>('all');
@@ -382,6 +434,9 @@ export function MarketPilotDashboard() {
   const [currentPage, setCurrentPage] = useState<DashboardPage>('hub');
   const tradeCounter = useRef(0);
   const openingTradeRef = useRef(false);
+  const aiTradeSessionRef = useRef<AiTradeSession | null>(null);
+  const tradeNotificationTimersRef = useRef(new Map<string, ReturnType<typeof setTimeout>>());
+  const notifiedTradeIdsRef = useRef(new Set<string>());
   const settlingTradeIdsRef = useRef(new Set<string>());
   const settlementExitTicksRef = useRef(new Map<string, MarketTick>());
   const cashierStatusChecksRef = useRef(new Set<string>());
@@ -419,6 +474,22 @@ export function MarketPilotDashboard() {
   const mobileMenuButtonRef = useRef<HTMLButtonElement>(null);
   const mobileMenuCloseRef = useRef<HTMLButtonElement>(null);
   const onAuthUserChange = useCallback((user: User | null) => setAuthUser(user), []);
+  const stopAiTrading = useCallback((message = 'Auto trading stopped.') => {
+    if (!aiTradeSessionRef.current) return;
+    aiTradeSessionRef.current = null;
+    setAiTradeSession(null);
+    setAiTradeMessage(message);
+  }, []);
+
+  useEffect(() => {
+    const session = aiTradeSessionRef.current;
+    if (!session) return;
+    if (session.accountType !== activeWallet || session.symbol !== market.selectedSymbol) {
+      stopAiTrading('Auto trading stopped because the wallet or market changed.');
+    } else if (!authUser) {
+      stopAiTrading('Auto trading stopped because the account signed out.');
+    }
+  }, [activeWallet, authUser, market.selectedSymbol, stopAiTrading]);
 
   useEffect(() => {
     setCashierDepositSuccess(null);
@@ -434,7 +505,11 @@ export function MarketPilotDashboard() {
 
     if (transaction.status === 'completed') {
       setCashierDepositConfirmation(null);
-      setCashierDepositSuccess({ transactionId: transaction.id, amount: transaction.amount });
+      setCashierDepositSuccess({
+        transactionId: transaction.id,
+        amount: transaction.amount,
+        welcomeBonus: transaction.welcomeBonus ?? 0,
+      });
       setCashierDepositCheckError('');
     } else if (transaction.status === 'failed' || transaction.status === 'declined') {
       setCashierDepositSuccess(null);
@@ -537,6 +612,69 @@ export function MarketPilotDashboard() {
   const durationIsValid = duration.trim() !== '' && durationError === '';
   const stakeValue = Number(stake);
   const stakeIsValid = stake.trim() !== '' && Number.isFinite(stakeValue) && stakeValue > 0;
+  const aiDigitValue = Number(aiPredictionDigit);
+  const aiStakeValue = Number(aiStake);
+  const aiTakeProfitValue = Number(aiTakeProfit);
+  const aiStopLossValue = Number(aiStopLoss);
+  const aiMultiplierValue = Number(aiMultiplier);
+  const aiHasDigitBarrier = ['DIGITOVER', 'DIGITUNDER', 'DIGITMATCH', 'DIGITDIFF'].includes(aiContractType);
+  const aiDigitIsValid = aiPredictionDigit.trim() !== '' &&
+    Number.isInteger(aiDigitValue) &&
+    aiDigitValue >= (aiContractType === 'DIGITUNDER' ? 1 : 0) &&
+    aiDigitValue <= (aiContractType === 'DIGITOVER' ? 8 : 9);
+  const aiStakeIsValid = aiStake.trim() !== '' &&
+    Number.isFinite(aiStakeValue) &&
+    aiStakeValue >= 0.35 &&
+    Math.round(aiStakeValue * 100) === aiStakeValue * 100;
+  const aiRiskLimitsAreValid = aiTakeProfit.trim() !== '' &&
+    Number.isFinite(aiTakeProfitValue) &&
+    aiTakeProfitValue > 0 &&
+    aiStopLoss.trim() !== '' &&
+    Number.isFinite(aiStopLossValue) &&
+    aiStopLossValue > 0 &&
+    aiStakeIsValid &&
+    aiMultiplier.trim() !== '' &&
+    Number.isFinite(aiMultiplierValue) &&
+    aiMultiplierValue >= 1.01;
+  const aiContractIsSupported = tickContracts.some((contract) => contract.contract_type === aiContractType);
+  const aiTradeDuration = aiContractType === 'CALL' || aiContractType === 'PUT' ? 10 : 1;
+  const aiPayout = aiStakeIsValid
+    ? getSimulatedContractPayout(aiContractType, aiHasDigitBarrier ? aiDigitValue : null, aiStakeValue)
+    : null;
+  const aiTradeIsReady = !!authUser &&
+    !!walletBalances &&
+    !walletLoading &&
+    !walletError &&
+    market.connectionState === 'connected' &&
+    !!latestLiveTick &&
+    !!selectedMarket?.exchangeOpen &&
+    !selectedMarket.suspended &&
+    aiContractIsSupported &&
+    aiRiskLimitsAreValid &&
+    (!aiHasDigitBarrier || aiDigitIsValid) &&
+    aiPayout !== null &&
+    aiStakeValue <= (walletBalances?.[activeWallet] ?? 0) &&
+    !openingTrade;
+  let aiTradeUnavailableReason = '';
+  if (!authUser) aiTradeUnavailableReason = 'Sign in to start auto trading.';
+  else if (walletLoading) aiTradeUnavailableReason = 'Waiting for wallet balances to load.';
+  else if (walletError) aiTradeUnavailableReason = walletError;
+  else if (!walletBalances) aiTradeUnavailableReason = 'Wallet balances are unavailable.';
+  else if (market.connectionState !== 'connected' || !latestLiveTick) {
+    aiTradeUnavailableReason = 'Waiting for a live market connection and fresh tick.';
+  } else if (!selectedMarket?.exchangeOpen || selectedMarket.suspended) {
+    aiTradeUnavailableReason = 'The selected market is closed or suspended.';
+  } else if (!aiContractIsSupported) {
+    aiTradeUnavailableReason = 'This contract is unavailable for the selected market.';
+  } else if (!aiRiskLimitsAreValid || (aiHasDigitBarrier && !aiDigitIsValid)) {
+    aiTradeUnavailableReason = '';
+  } else if (aiPayout === null) {
+    aiTradeUnavailableReason = 'A simulated payout is unavailable for these settings.';
+  } else if (aiStakeValue > (walletBalances?.[activeWallet] ?? 0)) {
+    aiTradeUnavailableReason = 'The selected wallet does not have enough balance for the base stake.';
+  } else if (openingTrade) {
+    aiTradeUnavailableReason = 'Another trade is being submitted.';
+  }
   const safeDuration = durationIsValid ? durationValue : durationLimits.min;
   const alternativeContractType = contractTypes.find((type) => type !== selectedContractType) ?? null;
   const alternativeDurationLimits = durationLimits;
@@ -594,12 +732,14 @@ export function MarketPilotDashboard() {
 
   useEffect(() => () => {
     if (digitExitTimerRef.current !== null) clearTimeout(digitExitTimerRef.current);
+    tradeNotificationTimersRef.current.forEach((timer) => clearTimeout(timer));
+    tradeNotificationTimersRef.current.clear();
   }, []);
 
   useEffect(() => {
     let active = true;
     clearDigitExitHighlight();
-    setActiveWallet('demo');
+    setActiveWallet('real');
     setWalletBalances(null);
     setWalletError('');
     setHistoryError('');
@@ -846,7 +986,11 @@ export function MarketPilotDashboard() {
             }
             const amount = storedNumber(resultRecord.amountUsd);
             if (amount !== null && amount > 0) {
-              setCashierDepositSuccess({ transactionId, amount });
+              setCashierDepositSuccess({
+                transactionId,
+                amount,
+                welcomeBonus: storedNumber(resultRecord.welcomeBonusUsd) ?? 0,
+              });
             }
           } else {
             setCashierDepositConfirmation('failed');
@@ -1102,6 +1246,9 @@ export function MarketPilotDashboard() {
                   ? { ...current, [trade.accountType]: balance }
                   : current);
                 setTrades((current) => current.filter((item) => item.id !== trade.id));
+                if (aiTradeSessionRef.current?.lastTradeId === trade.id) {
+                  stopAiTrading('Auto trading stopped because this legacy trade has no verified profit result.');
+                }
                 setTradeActionError('');
               }
               return;
@@ -1133,6 +1280,22 @@ export function MarketPilotDashboard() {
             setWalletBalances((current) => current
               ? { ...current, [trade.accountType]: settlement.balance }
               : current);
+            if (!notifiedTradeIdsRef.current.has(trade.id)) {
+              notifiedTradeIdsRef.current.add(trade.id);
+              const tradeNotification: TradeNotification = {
+                id: `${trade.id}-${settledExitTick.epoch}`,
+                outcome: settlement.status,
+                amount: Math.abs(settlement.profit),
+                marketName: market.symbols.find((symbol) => symbol.symbol === trade.symbol)?.name ?? trade.symbol,
+                contractLabel: trade.contractLabel,
+              };
+              setTradeNotifications((current) => [...current, tradeNotification]);
+              const notificationTimer = setTimeout(() => {
+                setTradeNotifications((current) => current.filter((item) => item.id !== tradeNotification.id));
+                tradeNotificationTimersRef.current.delete(tradeNotification.id);
+              }, 3_000);
+              tradeNotificationTimersRef.current.set(tradeNotification.id, notificationTimer);
+            }
             setTrades((current) => current.map((item) => item.id === trade.id ? {
               ...item,
               elapsed: trade.duration,
@@ -1144,6 +1307,35 @@ export function MarketPilotDashboard() {
               payout: settlement.payout,
               profit: settlement.profit,
             } : item));
+            const aiSession = aiTradeSessionRef.current;
+            if (aiSession?.lastTradeId === trade.id) {
+              const realizedProfit = Number((aiSession.realizedProfit + settlement.profit).toFixed(2));
+              if (realizedProfit >= aiSession.takeProfit) {
+                setAiLimitNotification({ outcome: 'take-profit', netProfit: realizedProfit });
+                stopAiTrading(`Take-profit reached at $${realizedProfit.toFixed(2)} net. Auto trading stopped.`);
+              } else if (realizedProfit <= -aiSession.stopLoss) {
+                setAiLimitNotification({ outcome: 'stop-loss', netProfit: realizedProfit });
+                stopAiTrading(`Stop-loss reached at $${realizedProfit.toFixed(2)} net. Auto trading stopped.`);
+              } else {
+                const nextStake = settlement.status === 'won'
+                  ? aiSession.baseStake
+                  : Number((aiSession.currentStake * aiSession.multiplier).toFixed(2));
+                if (nextStake > settlement.balance) {
+                  stopAiTrading('Auto trading stopped because the next multiplied stake exceeds the available wallet balance.');
+                } else {
+                  const updatedSession = {
+                    ...aiSession,
+                    realizedProfit,
+                    currentStake: nextStake,
+                    lastTradeId: null,
+                    lastTickSerial: market.getCurrentTickSerial(),
+                    pending: false,
+                  };
+                  aiTradeSessionRef.current = updatedSession;
+                  setAiTradeSession(updatedSession);
+                }
+              }
+            }
             if (trade.accountType === activeWallet && trade.contractType.startsWith('DIGIT')) {
               showDigitExitHighlight({
                 tradeId: trade.id,
@@ -1169,7 +1361,7 @@ export function MarketPilotDashboard() {
       };
       void settleTrade();
     }
-  }, [activeWallet, authUser?.id, market.tickEvents, showDigitExitHighlight, trades]);
+  }, [activeWallet, authUser?.id, market.getCurrentTickSerial, market.tickEvents, showDigitExitHighlight, stopAiTrading, trades]);
 
   const chooseKind = (nextKind: PracticeKind) => {
     setKind(nextKind);
@@ -1215,10 +1407,11 @@ export function MarketPilotDashboard() {
     if (!authUser || activeWallet !== 'real' || !cashierPaymentMode || cashierPaymentBusy) return;
 
     const amountUsd = Number(cashierPaymentAmount);
-    if (!Number.isFinite(amountUsd) || amountUsd < 1 || (cashierPaymentMode === 'deposit' && amountUsd > 500)) {
+    const minimumAmount = cashierPaymentMode === 'deposit' ? 5 : 20;
+    if (!Number.isFinite(amountUsd) || amountUsd < minimumAmount || (cashierPaymentMode === 'deposit' && amountUsd > 500)) {
       setCashierError(cashierPaymentMode === 'deposit'
-        ? 'Enter a deposit amount between $1.00 and $500.00.'
-        : 'Enter an amount of at least $1.00.');
+        ? 'Enter a deposit amount between $5.00 and $500.00.'
+        : 'Enter a withdrawal amount of at least $20.00.');
       return;
     }
     if (cashierPaymentMode === 'deposit' && !cashierPaymentPhone.trim()) {
@@ -1273,6 +1466,7 @@ export function MarketPilotDashboard() {
             type: 'deposit',
             status: 'pending',
             amount: pendingAmount,
+            welcomeBonus: undefined,
             createdAt: new Date().toISOString(),
           }]);
         setCashierTransactionsOwner(userId);
@@ -1333,35 +1527,69 @@ export function MarketPilotDashboard() {
     }
   };
 
-  const startPractice = async (type = selectedContractType, tradeQuote = quote) => {
+  const startPractice = async (
+    type = selectedContractType,
+    tradeQuote = quote,
+    options?: { barrier?: number | null; duration?: number; entryTick?: MarketTick; autoSessionId?: string },
+  ): Promise<string | null> => {
     const tradeContract = tickContracts.find((contract) => contract.contract_type === type);
     const hasDigitBarrier = ['DIGITOVER', 'DIGITUNDER', 'DIGITMATCH', 'DIGITDIFF'].includes(type);
-    if (
-      !latestLiveTick ||
-      !tradeQuote ||
-      !marketOpen ||
-      !selectedMarket ||
-      !tradeContract ||
-      !availableChoices.includes(type) ||
-      !authUser ||
-      !walletBalances ||
-      walletLoading ||
-      walletError ||
-      tradeQuote.askPrice > activeWalletBalance ||
-      !stakeIsValid ||
-      !durationIsValid ||
-      (hasDigitBarrier && !digitIsValid) ||
-      openingTradeRef.current
-    ) return;
+    const entryTickCandidate = options?.entryTick ?? latestLiveTick;
+    const tradeMarket = entryTickCandidate
+      ? market.symbols.find((symbol) => symbol.symbol === entryTickCandidate.symbol)
+      : null;
+    const barrier = options?.barrier ?? digitValue;
+    const tradeDuration = options?.duration ?? durationValue;
+    const autoContract = type === 'CALL' || type === 'PUT';
+    const validTradeDuration = options
+      ? Number.isInteger(tradeDuration) && tradeDuration >= (autoContract ? 10 : 1) && tradeDuration <= (autoContract ? 30 : 15)
+      : durationIsValid;
+    const validTradeStake = options
+      ? !!tradeQuote &&
+        Number.isFinite(tradeQuote.askPrice) &&
+        tradeQuote.askPrice >= 0.35 &&
+        Math.round(tradeQuote.askPrice * 100) === tradeQuote.askPrice * 100
+      : stakeIsValid;
+    const validTradeDigit = options
+      ? Number.isInteger(barrier) &&
+        barrier >= (type === 'DIGITUNDER' ? 1 : 0) &&
+        barrier <= (type === 'DIGITOVER' ? 8 : 9)
+      : digitIsValid;
+    let openingError = '';
+    if (!entryTickCandidate) openingError = 'Waiting for a fresh market tick.';
+    else if (!tradeQuote) openingError = 'A simulated payout quote is unavailable.';
+    else if (!tradeMarket?.exchangeOpen || tradeMarket.suspended) {
+      openingError = 'The selected market is closed or suspended.';
+    } else if (!tradeContract || !tickContracts.some((contract) => contract.contract_type === type)) {
+      openingError = 'This contract is unavailable for the selected market.';
+    } else if (!authUser) openingError = 'Sign in before placing an automatic trade.';
+    else if (!walletBalances || walletLoading || walletError) {
+      openingError = walletError || 'The selected wallet balance is not ready.';
+    } else if (tradeQuote.askPrice > activeWalletBalance) {
+      openingError = 'The selected wallet does not have enough balance for this stake.';
+    } else if (!validTradeStake) openingError = 'The trade stake is invalid.';
+    else if (!validTradeDuration) openingError = 'The selected trade duration is invalid.';
+    else if (hasDigitBarrier && !validTradeDigit) {
+      openingError = 'The prediction digit is invalid for this contract.';
+    } else if (openingTradeRef.current) openingError = 'Another trade is currently being submitted.';
+    if (openingError) {
+      if (options?.autoSessionId && aiTradeSessionRef.current?.id === options.autoSessionId) {
+        setTradeActionError(openingError);
+        stopAiTrading(`Auto trading stopped: ${openingError}`);
+      }
+      return null;
+    }
+    if (!entryTickCandidate || !tradeQuote || !tradeMarket || !tradeContract || !authUser || !walletBalances) {
+      return null;
+    }
     const tradeAccount = activeWallet;
-    const tradeDuration = durationValue;
+    let entryTick = entryTickCandidate;
     if (tradeAccount === 'demo') tradeCounter.current += 1;
     let tradeId = tradeAccount === 'demo' ? `${Date.now()}-${tradeCounter.current}` : '';
-    let entryTick = latestLiveTick;
     let entryDigit = tradeAccount === 'real'
-      ? getMarketPilotTickDigit(latestLiveTick)
-      : getLastDigit(latestLiveTick);
-    let entrySerial = market.getTickSerial(latestLiveTick);
+      ? getMarketPilotTickDigit(entryTick)
+      : getLastDigit(entryTick);
+    const entrySerial = market.getTickSerial(entryTick);
     let payout = tradeQuote.payout;
     const typeLabel = CONTRACT_LABELS[type];
     openingTradeRef.current = true;
@@ -1375,14 +1603,14 @@ export function MarketPilotDashboard() {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            symbol: selectedMarket.symbol,
+            symbol: tradeMarket.symbol,
             contractType: type,
-            barrier: hasDigitBarrier ? digitValue : null,
+            barrier: hasDigitBarrier ? barrier : null,
             duration: tradeDuration,
             stake: tradeQuote.askPrice,
-            entryPrice: latestLiveTick.quote,
-            entryPipSize: latestLiveTick.pipSize,
-            entryEpoch: latestLiveTick.epoch,
+            entryPrice: entryTick.quote,
+            entryPipSize: entryTick.pipSize,
+            entryEpoch: entryTick.epoch,
           }),
         });
         const result: unknown = await response.json();
@@ -1418,7 +1646,7 @@ export function MarketPilotDashboard() {
         balance = returnedBalance;
         payout = returnedPayout;
         entryTick = {
-          symbol: selectedMarket.symbol,
+          symbol: tradeMarket.symbol,
           quote: returnedEntryPrice,
           pipSize: returnedEntryPipSize,
           epoch: returnedEntryEpoch,
@@ -1431,16 +1659,16 @@ export function MarketPilotDashboard() {
         const { data, error } = await getSupabaseBrowserClient().rpc('marketpilot_open_practice_trade', {
           p_trade_id: tradeId,
           p_account_type: tradeAccount,
-          p_symbol: selectedMarket.symbol,
+          p_symbol: tradeMarket.symbol,
           p_contract_type: type,
-          p_barrier: hasDigitBarrier ? digitValue : null,
+          p_barrier: hasDigitBarrier ? barrier : null,
           p_duration: tradeDuration,
           p_stake: tradeQuote.askPrice,
           p_quoted_payout: tradeQuote.payout,
-          p_entry_price: latestLiveTick.quote,
-          p_entry_pip_size: latestLiveTick.pipSize,
-          p_entry_digit: getLastDigit(latestLiveTick),
-          p_entry_epoch: latestLiveTick.epoch,
+          p_entry_price: entryTick.quote,
+          p_entry_pip_size: entryTick.pipSize,
+          p_entry_digit: getLastDigit(entryTick),
+          p_entry_epoch: entryTick.epoch,
         });
         if (error) {
           if (error.message.includes('Insufficient wallet balance')) {
@@ -1450,20 +1678,30 @@ export function MarketPilotDashboard() {
         }
         balance = storedNumber(data);
       }
-      if (authUserIdRef.current !== userId) return;
+      if (authUserIdRef.current !== userId) return null;
       if (balance === null || balance < 0) throw new Error('The wallet returned an invalid balance.');
       setWalletBalances((current) => current ? { ...current, [tradeAccount]: balance } : current);
       setContractType(type);
       if (type.startsWith('DIGIT')) clearDigitExitHighlight();
+      if (options?.autoSessionId && aiTradeSessionRef.current?.id === options.autoSessionId) {
+        const updatedSession = {
+          ...aiTradeSessionRef.current,
+          lastTradeId: tradeId,
+          lastTickSerial: entrySerial,
+          pending: false,
+        };
+        aiTradeSessionRef.current = updatedSession;
+        setAiTradeSession(updatedSession);
+      }
       setTrades((previous) => [{
         id: tradeId,
         accountType: tradeAccount,
-        symbol: selectedMarket.symbol,
+        symbol: tradeMarket.symbol,
         contractType: type,
-        contractLabel: `${typeLabel}${hasDigitBarrier ? ` ${digitValue}` : ''}`,
-        barrier: hasDigitBarrier ? digitValue : null,
+        contractLabel: `${typeLabel}${hasDigitBarrier ? ` ${barrier}` : ''}`,
+        barrier: hasDigitBarrier ? barrier : null,
         duration: tradeDuration,
-        durationUnit: durationLimits.unit,
+        durationUnit: 't',
         stake: tradeQuote.askPrice,
         quotedPayout: payout,
         entryPrice: entryTick.quote,
@@ -1474,17 +1712,126 @@ export function MarketPilotDashboard() {
         elapsed: 0,
         status: 'Open' as const,
       }, ...previous].slice(0, 100));
+      return tradeId;
     } catch (error) {
+      const errorMessage = error instanceof Error
+        ? error.message
+        : `The ${tradeAccount === 'real' ? 'Real simulated' : 'Demo'} trade could not be opened.`;
       if (authUserIdRef.current === userId) {
-        setTradeActionError(error instanceof Error
-          ? error.message
-          : `The ${tradeAccount === 'real' ? 'Real simulated' : 'Demo'} trade could not be opened.`);
+        setTradeActionError(errorMessage);
+        if (options?.autoSessionId && aiTradeSessionRef.current?.id === options.autoSessionId) {
+          stopAiTrading(`Auto trading stopped: ${errorMessage}`);
+        }
       }
+      return null;
     } finally {
       openingTradeRef.current = false;
       setOpeningTrade(false);
     }
   };
+
+  const startAiTrading = () => {
+    if (!aiTradeIsReady || aiPayout === null || !market.selectedSymbol) return;
+    const session: AiTradeSession = {
+      id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      accountType: activeWallet,
+      symbol: market.selectedSymbol,
+      contractType: aiContractType,
+      barrier: aiHasDigitBarrier ? aiDigitValue : null,
+      baseStake: aiStakeValue,
+      currentStake: aiStakeValue,
+      takeProfit: aiTakeProfitValue,
+      stopLoss: aiStopLossValue,
+      multiplier: aiMultiplierValue,
+      realizedProfit: 0,
+      lastTradeId: null,
+      lastTickSerial: market.getCurrentTickSerial(),
+      pending: false,
+    };
+    const selectedChoice = aiContractChoices.find((choice) => choice.type === aiContractType);
+    if (selectedChoice) setKind(selectedChoice.kind);
+    setContractType(aiContractType);
+    setDigit(String(aiDigitValue));
+    setDuration(String(aiTradeDuration));
+    aiTradeSessionRef.current = session;
+    setAiTradeSession(session);
+    setAiTradeMessage('');
+    setAiLimitNotification(null);
+    setAiPanelOpen(true);
+  };
+
+  useEffect(() => {
+    const session = aiTradeSessionRef.current;
+    if (
+      !session ||
+      session.id !== aiTradeSession?.id ||
+      session.pending ||
+      session.lastTradeId
+    ) return;
+    if (
+      session.accountType !== activeWallet ||
+      session.symbol !== market.selectedSymbol
+    ) {
+      stopAiTrading('Auto trading stopped because the wallet or market changed.');
+      return;
+    }
+    if (market.connectionState !== 'connected') return;
+    if (!marketOpen) {
+      stopAiTrading('Auto trading stopped because the selected market is closed.');
+      return;
+    }
+
+    const nextTick = [...market.tickEvents].reverse().find(({ serial, tick }) => (
+      serial > session.lastTickSerial && tick.symbol === session.symbol
+    ));
+    if (!nextTick) return;
+    if (session.currentStake > activeWalletBalance) {
+      stopAiTrading('Auto trading stopped because the next stake exceeds the available wallet balance.');
+      return;
+    }
+    const payout = getSimulatedContractPayout(
+      session.contractType,
+      session.barrier,
+      session.currentStake,
+    );
+    if (payout === null || !Number.isFinite(payout) || payout < session.currentStake) {
+      stopAiTrading('Auto trading stopped because no simulated payout is available for the selected contract.');
+      return;
+    }
+
+    const pendingSession = {
+      ...session,
+      pending: true,
+      lastTickSerial: nextTick.serial,
+    };
+    aiTradeSessionRef.current = pendingSession;
+    setAiTradeSession(pendingSession);
+    void startPractice(
+      session.contractType,
+      { askPrice: session.currentStake, payout },
+      {
+        barrier: session.barrier,
+        duration: session.contractType === 'CALL' || session.contractType === 'PUT' ? 10 : 1,
+        entryTick: nextTick.tick,
+        autoSessionId: session.id,
+      },
+    ).then((tradeId) => {
+      if (!tradeId && aiTradeSessionRef.current?.id === session.id) {
+        stopAiTrading('Auto trading stopped because the next simulated trade could not be opened.');
+      }
+    });
+  }, [
+    activeWallet,
+    activeWalletBalance,
+    aiTradeSession,
+    market.connectionState,
+    market.getCurrentTickSerial,
+    market.selectedSymbol,
+    market.tickEvents,
+    marketOpen,
+    startPractice,
+    stopAiTrading,
+  ]);
 
   const groupedSymbols = useMemo(() => {
     const groups = new Map<string, typeof market.symbols>();
@@ -1569,65 +1916,285 @@ export function MarketPilotDashboard() {
           ? formatBalance(walletBalances[activeWallet])
           : 'Unavailable';
   const renderContractActions = (placement: 'inline' | 'floating') => (
-    <div
-      className={`contract-action-pair contract-action-pair--${placement}`}
-      role="group"
-      aria-label={`${kindLabels[kind]} ${activeWallet} simulated trade actions`}
-    >
-      {contractTypes.map((type) => {
-        const supported = availableChoices.includes(type);
-        const actionQuote = type === selectedContractType
-          ? quote
-          : type === alternativeContractType
-            ? alternativeQuote
-            : null;
-        const positive = ['DIGITOVER', 'DIGITEVEN', 'DIGITMATCH', 'CALL'].includes(type);
-        const hasDigitBarrier = ['DIGITOVER', 'DIGITUNDER', 'DIGITMATCH', 'DIGITDIFF'].includes(type);
-        const actionLabel = `${CONTRACT_LABELS[type]}${hasDigitBarrier ? ` ${digit}` : ''}`;
-        const actionDuration = type === selectedContractType ? safeDuration : alternativeSafeDuration;
-        const actionDurationUnit = type === selectedContractType
-          ? durationLimits.unit
-          : alternativeDurationLimits.unit;
-        const insufficientBalance = !!actionQuote && !!walletBalances &&
-          actionQuote.askPrice > walletBalances[activeWallet];
-        const disabled = !supported ||
-          !actionQuote ||
-          !stakeIsValid ||
-          !durationIsValid ||
-          (hasDigitBarrier && !digitIsValid) ||
-          !latestLiveTick ||
-          !marketOpen ||
-          !authUser ||
-          !walletBalances ||
-          walletLoading ||
-          !!walletError ||
-          insufficientBalance ||
-          openingTrade;
-
-        return (
-          <button
-            key={type}
-            className={`contract-action-button ${positive ? 'is-positive' : 'is-negative'}`}
-            type="button"
-            onClick={() => startPractice(type, actionQuote)}
-            disabled={disabled}
-            title={`Start ${actionLabel} ${activeWallet} simulated trade`}
-            aria-label={actionQuote
-              ? `${actionLabel}. Payout ${formatMoney(actionQuote.payout)}, including ${formatMoney(actionQuote.askPrice)} stake and ${formatProfit(actionQuote.payout - actionQuote.askPrice)} profit.`
-              : `${actionLabel}.`}
+    <div className={`contract-controls contract-controls--${placement}`}>
+      {aiPanelOpen || aiTradeSession ? (
+        <section className="ai-trader-panel" aria-label="AI auto trading settings">
+          <div className="ai-trader-panel-heading">
+            <div>
+              <strong>AI Auto Trader</strong>
+              <span>{market.selectedSymbol} · {activeWallet === 'real' ? 'Real' : 'Demo'} wallet</span>
+            </div>
+            {!aiTradeSession && (
+              <button
+                type="button"
+                className="ai-trader-close"
+                onClick={() => {
+                  setAiPanelOpen(false);
+                  setAiTradeMessage('');
+                }}
+                aria-label="Close AI auto trading"
+              >
+                <X size={15} aria-hidden="true" />
+              </button>
+            )}
+          </div>
+          <p className="ai-trader-description">
+            Select one contract to repeat automatically. It waits for each trade to settle before starting another.
+            These are MarketPilot simulated trades, not orders to a broker. The selected Real wallet balance is used when active.
+            Automated execution does not predict the market. Stopping prevents new submissions; requests already sent or trades already open may still settle.
+          </p>
+          <div className="ai-contract-list" role="group" aria-label="Select one contract type">
+            {aiContractChoices.map((choice) => {
+              const supported = tickContracts.some((contract) => contract.contract_type === choice.type);
+              return (
+                <button
+                  key={choice.type}
+                  type="button"
+                  aria-pressed={aiContractType === choice.type}
+                  className={`ai-contract-choice${aiContractType === choice.type ? ' is-selected' : ''}`}
+                  disabled={!supported || !!aiTradeSession}
+                  title={supported ? choice.label : `${choice.label} is unavailable for this market`}
+                  onClick={() => {
+                    setAiContractType(choice.type);
+                    setKind(choice.kind);
+                    setContractType(choice.type);
+                    setAiTradeMessage('');
+                  }}
+                >
+                  {choice.label}
+                </button>
+              );
+            })}
+          </div>
+          {aiHasDigitBarrier && (
+            <label className="ai-trader-field">
+              <span>Prediction digit (0–9)</span>
+              <input
+                type="number"
+                min={aiContractType === 'DIGITUNDER' ? 1 : 0}
+                max={aiContractType === 'DIGITOVER' ? 8 : 9}
+                step="1"
+                value={aiPredictionDigit}
+                disabled={!!aiTradeSession}
+                onChange={(event) => setAiPredictionDigit(event.target.value)}
+              />
+            </label>
+          )}
+          <div className="ai-trader-fields">
+            <label className="ai-trader-field">
+              <span>Stake ($)</span>
+              <input
+                type="number"
+                min="0.35"
+                step="0.01"
+                value={aiStake}
+                disabled={!!aiTradeSession}
+                onChange={(event) => setAiStake(event.target.value)}
+              />
+            </label>
+            <label className="ai-trader-field">
+              <span>Take profit ($ net)</span>
+              <input
+                type="number"
+                min="0.01"
+                step="0.01"
+                value={aiTakeProfit}
+                disabled={!!aiTradeSession}
+                onChange={(event) => setAiTakeProfit(event.target.value)}
+              />
+            </label>
+            <label className="ai-trader-field">
+              <span>Stop loss ($ net)</span>
+              <input
+                type="number"
+                min={aiStakeIsValid ? aiStakeValue : 0.01}
+                step="0.01"
+                value={aiStopLoss}
+                disabled={!!aiTradeSession}
+                onChange={(event) => setAiStopLoss(event.target.value)}
+              />
+            </label>
+            <label className="ai-trader-field">
+              <span>Loss multiplier (at least 1.01×)</span>
+              <input
+                type="number"
+                min="1.01"
+                step="0.01"
+                value={aiMultiplier}
+                disabled={!!aiTradeSession}
+                onChange={(event) => setAiMultiplier(event.target.value)}
+              />
+            </label>
+          </div>
+          <p className="ai-trader-risk-note">
+            Stop limits track session net profit/loss. After a loss, the next stake is multiplied; after a win, it resets.
+            Stop loss triggers after realized net loss reaches or exceeds your limit; the final trade can take the total past it.
+            It will not place a stake larger than your wallet balance. Rise/Fall contracts have a 10-tick minimum.
+          </p>
+          {!aiRiskLimitsAreValid && (
+            <p className="ai-trader-message" role="status">
+              Use a stake of at least $0.35, positive profit and loss limits, and a multiplier of at least 1.01×.
+            </p>
+          )}
+          {!aiTradeSession && !aiTradeIsReady && aiTradeUnavailableReason && (
+            <p className="ai-trader-message" role="status">{aiTradeUnavailableReason}</p>
+          )}
+          {aiTradeSession && (
+            <div className="ai-trader-status" role="status">
+              <span>{aiTradeSession.pending
+                ? 'Submitting trade…'
+                : aiTradeSession.lastTradeId
+                  ? 'Trade open; waiting for settlement…'
+                  : 'Waiting for next market tick…'}</span>
+              <strong className={aiTradeSession.realizedProfit > 0 ? 'positive' : aiTradeSession.realizedProfit < 0 ? 'negative' : ''}>
+                Net {aiTradeSession.realizedProfit >= 0 ? '+' : ''}${aiTradeSession.realizedProfit.toFixed(2)}
+                {' · '}Next stake ${aiTradeSession.currentStake.toFixed(2)}
+              </strong>
+            </div>
+          )}
+          {aiTradeMessage && <p className="ai-trader-message" role="status">{aiTradeMessage}</p>}
+          {aiTradeSession ? (
+            <button type="button" className="ai-trader-stop" onClick={() => stopAiTrading()}>
+              Stop Auto Trading
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="ai-trader-start"
+              onClick={startAiTrading}
+              disabled={!aiTradeIsReady}
+            >
+              Scan And Trade
+            </button>
+          )}
+        </section>
+      ) : (
+        <>
+          <div
+            className="contract-action-pair"
+            role="group"
+            aria-label={`${kindLabels[kind]} ${activeWallet} simulated trade actions`}
           >
-            <span className="contract-action-name">{actionLabel}</span>
-            {actionQuote ? (
-              <strong className="contract-action-payout">Payout: {formatMoney(actionQuote.payout)}</strong>
-            ) : null}
+            {contractTypes.map((type) => {
+              const supported = availableChoices.includes(type);
+              const actionQuote = type === selectedContractType
+                ? quote
+                : type === alternativeContractType
+                  ? alternativeQuote
+                  : null;
+              const positive = ['DIGITOVER', 'DIGITEVEN', 'DIGITMATCH', 'CALL'].includes(type);
+              const hasDigitBarrier = ['DIGITOVER', 'DIGITUNDER', 'DIGITMATCH', 'DIGITDIFF'].includes(type);
+              const actionLabel = `${CONTRACT_LABELS[type]}${hasDigitBarrier ? ` ${digit}` : ''}`;
+              const insufficientBalance = !!actionQuote && !!walletBalances &&
+                actionQuote.askPrice > walletBalances[activeWallet];
+              const disabled = !supported ||
+                !actionQuote ||
+                !stakeIsValid ||
+                !durationIsValid ||
+                (hasDigitBarrier && !digitIsValid) ||
+                !latestLiveTick ||
+                !marketOpen ||
+                !authUser ||
+                !walletBalances ||
+                walletLoading ||
+                !!walletError ||
+                insufficientBalance ||
+                openingTrade;
+
+              return (
+                <button
+                  key={type}
+                  className={`contract-action-button ${positive ? 'is-positive' : 'is-negative'}`}
+                  type="button"
+                  onClick={() => void startPractice(type, actionQuote)}
+                  disabled={disabled}
+                  title={`Start ${actionLabel} ${activeWallet} simulated trade`}
+                  aria-label={actionQuote
+                    ? `${actionLabel}. Payout ${formatMoney(actionQuote.payout)}, including ${formatMoney(actionQuote.askPrice)} stake and ${formatProfit(actionQuote.payout - actionQuote.askPrice)} profit.`
+                    : `${actionLabel}.`}
+                >
+                  <span className="contract-action-name">{actionLabel}</span>
+                  {actionQuote ? (
+                    <strong className="contract-action-payout">Payout: {formatMoney(actionQuote.payout)}</strong>
+                  ) : null}
+                </button>
+              );
+            })}
+          </div>
+          <button
+            type="button"
+            className="ai-trader-launch"
+            onClick={() => {
+              setAiPanelOpen(true);
+              setAiTradeMessage('');
+            }}
+            aria-label="Open AI auto trading"
+          >
+            AI
           </button>
-        );
-      })}
+        </>
+      )}
     </div>
   );
 
   return (
     <main className="app-shell">
+      {aiLimitNotification && (
+        <div className={`ai-limit-overlay ai-limit-overlay--${aiLimitNotification.outcome}`}>
+          <section className="ai-limit-notification" role="alert" aria-live="assertive">
+            <button
+              type="button"
+              className="ai-limit-dismiss"
+              onClick={() => setAiLimitNotification(null)}
+              aria-label="Dismiss trading limit notification"
+            >
+              <X size={18} aria-hidden="true" />
+            </button>
+            <span className="ai-limit-icon" aria-hidden="true">
+              {aiLimitNotification.outcome === 'take-profit' ? '✓' : '!'}
+            </span>
+            <p className="eyebrow">
+              {aiLimitNotification.outcome === 'take-profit' ? 'TAKE PROFIT HIT' : 'STOP LOSS HIT'}
+            </p>
+            <h2>{aiLimitNotification.outcome === 'take-profit' ? 'Congratulations!' : 'Oops!'}</h2>
+            <p className="ai-limit-detail">
+              {aiLimitNotification.outcome === 'take-profit'
+                ? 'Your take-profit limit was reached.'
+                : 'Your stop-loss limit was reached.'}
+            </p>
+            <strong className="ai-limit-result">
+              Net result {aiLimitNotification.netProfit >= 0 ? '+' : '-'}$
+              {Math.abs(aiLimitNotification.netProfit).toFixed(2)}
+            </strong>
+            <button
+              type="button"
+              className="ai-limit-confirm"
+              onClick={() => setAiLimitNotification(null)}
+            >
+              Got it
+            </button>
+          </section>
+        </div>
+      )}
+      {tradeNotifications.length > 0 && (
+        <div className="trade-notification-stack" aria-live="polite" aria-relevant="additions">
+          {tradeNotifications.map((notification) => (
+            <section
+              key={notification.id}
+              className={`trade-notification trade-notification--${notification.outcome}`}
+              role="status"
+            >
+              <strong className="trade-notification-result">
+                TRADE {notification.outcome === 'won' ? 'WON' : 'LOST'}{' '}
+                {notification.outcome === 'won' ? '+' : '-'}${notification.amount.toFixed(2)}
+              </strong>
+              <span className="trade-notification-detail">
+                {notification.marketName} · {notification.contractLabel}
+              </span>
+            </section>
+          ))}
+        </div>
+      )}
       <header className="topbar">
         <div className="brand">
           <button
@@ -1664,6 +2231,13 @@ export function MarketPilotDashboard() {
             onClick={() => setCurrentPage('cashier')}
           >
             Cashier
+          </button>
+          <button
+            type="button"
+            className={`nav-link${currentPage === 'premium-bots' ? ' active' : ''}`}
+            onClick={() => setCurrentPage('premium-bots')}
+          >
+            Premium Bots
           </button>
           {authUser && (
             <button
@@ -1804,6 +2378,33 @@ export function MarketPilotDashboard() {
         </div>
       )}
 
+      {currentPage === 'premium-bots' && (
+        <section className="page-content premium-bots-page" aria-labelledby="premium-bots-title">
+          <div className="page-heading">
+            <div>
+              <p className="eyebrow">AUTOMATED TRADING</p>
+              <h1 id="premium-bots-title">Premium Bots</h1>
+            </div>
+          </div>
+          <article className="account-settings-card premium-bots-card">
+            <div className="premium-bots-card-heading">
+              <span className="premium-bots-icon"><Bot size={21} aria-hidden="true" /></span>
+              <span className="premium-bots-status">Under development</span>
+            </div>
+            <h2>Trading automation is coming soon</h2>
+            <p>
+              Expert Advisors (EAs) and trading bots can follow predefined rules and execute
+              strategies consistently, helping reduce repetitive manual steps.
+            </p>
+            <p>
+              Automation does not make trades certain or guarantee accuracy or profit. Markets
+              are risky, and every strategy can lose. Premium Bots are under development and
+              are not available to trade yet.
+            </p>
+          </article>
+        </section>
+      )}
+
       {currentPage === 'cashier' && (
         <section className="page-content cashier-page" aria-labelledby="cashier-title">
           <div className="page-heading cashier-heading">
@@ -1823,9 +2424,20 @@ export function MarketPilotDashboard() {
               className={`cashier-wallet-card is-active${cashierWalletIsDemo ? ' cashier-wallet-card--demo' : ' cashier-wallet-card--real'}`}
             >
               <div className="cashier-wallet-heading">
-                <span className={`cashier-wallet-badge${cashierWalletIsDemo ? ' is-demo' : ' is-real'}`}>
-                  {cashierWalletIsDemo ? 'DEMO' : 'REAL'}
-                </span>
+                <div className="cashier-wallet-heading-left">
+                  {!cashierWalletIsDemo && (
+                    <Image
+                      className="cashier-wallet-image"
+                      src="/real-account-us.png"
+                      alt="United States flag"
+                      width={34}
+                      height={34}
+                    />
+                  )}
+                  <span className={`cashier-wallet-badge${cashierWalletIsDemo ? ' is-demo' : ' is-real'}`}>
+                    {cashierWalletIsDemo ? 'DEMO' : 'REAL'}
+                  </span>
+                </div>
                 <span className="cashier-active-label">ACTIVE</span>
               </div>
               <span className="cashier-wallet-title">{cashierWalletLabel}</span>
@@ -1920,6 +2532,11 @@ export function MarketPilotDashboard() {
                           <strong>Success</strong>
                           <p>Funds added to your real trading wallet</p>
                           <b>{formatMoney(cashierDepositSuccess.amount)} USD credited</b>
+                          {cashierDepositSuccess.welcomeBonus > 0 && (
+                            <p className="cashier-welcome-bonus">
+                              Welcome bonus: {formatMoney(cashierDepositSuccess.welcomeBonus)} USD
+                            </p>
+                          )}
                         </div>
                       </article>
                     ) : cashierDepositConfirmation === 'failed' ? (
@@ -1966,7 +2583,7 @@ export function MarketPilotDashboard() {
                   Amount (USD)
                   <input
                     type="number"
-                    min="1"
+                    min={cashierPaymentMode === 'deposit' ? '5' : '20'}
                     max={cashierPaymentMode === 'deposit' ? '500' : undefined}
                     step="0.01"
                     inputMode="decimal"
@@ -2012,7 +2629,7 @@ export function MarketPilotDashboard() {
                 </p>
                 <p className="cashier-payment-note">
                   {cashierPaymentMode === 'deposit'
-                    ? 'A payment prompt will be sent to the phone number entered above. Your USD balance is credited after payment confirmation.'
+                    ? 'A payment prompt will be sent to the phone number entered above. Your USD balance is credited after payment confirmation. Your first confirmed deposit earns a one-time 50% welcome bonus.'
                     : 'The USD amount is reserved immediately. An administrator must approve your request and send the KES amount to this phone number.'}
                 </p>
                 <div className="cashier-payment-actions">
@@ -2059,6 +2676,11 @@ export function MarketPilotDashboard() {
                       <div>
                         <strong>{transaction.type === 'deposit' ? 'Deposit' : 'Withdrawal'}</strong>
                         <span>{localTime(Number.isFinite(Date.parse(transaction.createdAt)) ? Date.parse(transaction.createdAt) / 1000 : 0)} UTC</span>
+                        {transaction.welcomeBonus !== undefined && transaction.welcomeBonus > 0 && (
+                          <span className="cashier-welcome-bonus">
+                            Welcome bonus +{formatMoney(transaction.welcomeBonus)} USD
+                          </span>
+                        )}
                       </div>
                       <strong className="cashier-transaction-amount">
                         {transaction.type === 'deposit' ? '+' : '-'}{formatMoney(transaction.amount)}

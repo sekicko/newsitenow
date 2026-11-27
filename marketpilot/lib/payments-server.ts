@@ -8,6 +8,7 @@ type PendingDeposit = {
   user_id: string;
   status: string;
   amount_kes: number | string;
+  welcome_bonus_usd: number | string;
   megapay_request_id: string | null;
   reference: string;
   created_at: string;
@@ -44,7 +45,7 @@ export async function completeMegaPayDeposit(
     amountKes: number;
     phone: string;
   },
-): Promise<{ balance: number | null }> {
+): Promise<{ balance: number | null; welcomeBonusUsd: number | null }> {
   const { data, error } = await admin.rpc('marketpilot_payment_complete_deposit', {
     p_request_id: input.requestId,
     p_provider_transaction_id: input.providerTransactionId,
@@ -57,7 +58,10 @@ export async function completeMegaPayDeposit(
   if (!isRecord(data) || data.status !== 'completed') {
     throw new Error('Deposit settlement returned an invalid result.');
   }
-  return { balance: numberValue(data.balance) };
+  return {
+    balance: numberValue(data.balance),
+    welcomeBonusUsd: numberValue(data.welcomeBonusUsd),
+  };
 }
 
 async function markDepositFailed(
@@ -85,7 +89,12 @@ async function markDepositFailed(
 export async function verifyAndSettleMegaPayDeposit(
   admin: PaymentAdminClient,
   transaction: PendingDeposit,
-): Promise<{ status: 'pending' | 'completed' | 'failed'; balance?: number; message?: string }> {
+): Promise<{
+  status: 'pending' | 'completed' | 'failed';
+  balance?: number;
+  welcomeBonusUsd?: number;
+  message?: string;
+}> {
   if (transaction.status !== 'pending') {
     return { status: transaction.status === 'completed' ? 'completed' : 'failed' };
   }
@@ -149,10 +158,11 @@ export async function verifyAndSettleMegaPayDeposit(
       amountKes,
       phone,
     });
-    const balance = settlement.balance;
-    return balance === null
-      ? { status: 'completed' }
-      : { status: 'completed', balance };
+    return {
+      status: 'completed',
+      ...(settlement.balance === null ? {} : { balance: settlement.balance }),
+      ...(settlement.welcomeBonusUsd === null ? {} : { welcomeBonusUsd: settlement.welcomeBonusUsd }),
+    };
   }
 
   const hasFailedProviderStatus = /^(failed|failure|cancel(?:led|ed)?|declined|expired|rejected|error)\b/.test(providerStatus);

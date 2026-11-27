@@ -12,6 +12,7 @@ export type PaymentAdminDatabase = {
           transaction_type: 'deposit' | 'withdrawal';
           status: 'pending' | 'completed' | 'declined' | 'failed';
           amount_usd: number;
+          welcome_bonus_usd: number;
           amount_kes: number;
           phone_e164: string;
           reference: string;

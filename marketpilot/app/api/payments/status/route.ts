@@ -32,7 +32,7 @@ export async function POST(request: NextRequest) {
     const admin = getSupabaseAdminClient();
     const { data: transaction, error: transactionError } = await admin
       .from('marketpilot_transactions')
-      .select('id,user_id,status,transaction_type,amount_kes,amount_usd,megapay_request_id,reference,created_at')
+      .select('id,user_id,status,transaction_type,amount_kes,amount_usd,welcome_bonus_usd,megapay_request_id,reference,created_at')
       .eq('id', transactionId)
       .eq('user_id', user.id)
       .maybeSingle();
@@ -69,6 +69,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       ...result,
       amountUsd: Number(transaction.amount_usd),
+      welcomeBonusUsd: result.welcomeBonusUsd ?? Number(transaction.welcome_bonus_usd),
       ...(balance === undefined ? {} : { balance }),
     });
   } catch (error) {
