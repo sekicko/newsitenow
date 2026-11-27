@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+import Image from 'next/image';
 import {
   ArrowRight,
   CheckCircle2,
@@ -160,8 +161,20 @@ export function AuthControls({
               aria-expanded={walletMenuOpen}
               aria-label={`Current wallet: ${activeWallet === 'real' ? 'Real' : 'Demo'}, ${walletBalanceLabel(activeWallet)}. Switch wallet`}
             >
-              <span>{activeWallet === 'real' ? 'REAL' : 'DEMO'}</span>
-              <strong>{walletBalanceLabel(activeWallet)}</strong>
+              {activeWallet === 'real' && (
+                <Image
+                  className="wallet-switcher-image"
+                  src="/real-account-us.png"
+                  alt=""
+                  width={32}
+                  height={32}
+                  aria-hidden="true"
+                />
+              )}
+              <span className="wallet-switcher-copy">
+                <strong>{walletBalanceLabel(activeWallet)}</strong>
+                <span>{activeWallet === 'real' ? 'REAL' : 'DEMO'}</span>
+              </span>
               <ChevronDown className={walletMenuOpen ? 'is-open' : ''} size={13} />
             </button>
             {walletMenuOpen && (
@@ -176,6 +189,16 @@ export function AuthControls({
                     onClick={() => chooseWallet(wallet)}
                     title={wallet === 'real' ? 'Deposits and real-money trading are not enabled' : 'Use the Demo wallet'}
                   >
+                    {wallet === 'real' && (
+                      <Image
+                        className="wallet-menu-option-image"
+                        src="/real-account-us.png"
+                        alt=""
+                        width={30}
+                        height={30}
+                        aria-hidden="true"
+                      />
+                    )}
                     <span className="wallet-menu-option-copy">
                       <strong>{wallet === 'real' ? 'Real' : 'Demo'}</strong>
                       <small>{wallet === 'real' ? 'Real account' : 'Demo account'}</small>

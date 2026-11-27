@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { NextResponse, type NextRequest } from 'next/server';
 import { getMarketPilotTickDigit, VOLATILITY_SYMBOLS, type MarketTick } from '@/lib/market-data';
 import { getSimulatedContractPayout } from '@/lib/practice';
+import { isSameOriginRequest } from '@/lib/request-origin';
 import { getSupabaseAdminClient } from '@/lib/supabase/admin';
 import { createSupabaseServerClient } from '@/lib/supabase/server';
 
@@ -10,8 +11,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 export async function POST(request: NextRequest) {
-  const origin = request.headers.get('origin');
-  if (origin && origin !== request.nextUrl.origin) {
+  if (!isSameOriginRequest(request)) {
     return NextResponse.json({ error: 'This trade request is not allowed.' }, { status: 403 });
   }
 

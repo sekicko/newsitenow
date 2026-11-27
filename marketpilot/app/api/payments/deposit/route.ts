@@ -21,8 +21,8 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Enter a valid deposit amount.' }, { status: 400 });
   }
   const amountUsd = isRecord(body) ? body.amountUsd : null;
-  if (typeof amountUsd !== 'number' || !Number.isFinite(amountUsd) || amountUsd < 1 || amountUsd > 500) {
-    return NextResponse.json({ error: 'Deposit amount must be between $1.00 and $500.00.' }, { status: 400 });
+  if (typeof amountUsd !== 'number' || !Number.isFinite(amountUsd) || amountUsd < 5 || amountUsd > 500) {
+    return NextResponse.json({ error: 'Deposit amount must be between $5.00 and $500.00.' }, { status: 400 });
   }
   const phoneInput = isRecord(body) ? body.phone : null;
   const phone = typeof phoneInput === 'string' ? parsePhoneNumberFromString(phoneInput.trim()) : undefined;
