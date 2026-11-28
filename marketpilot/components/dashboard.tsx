@@ -5,7 +5,6 @@ import Image from 'next/image';
 import {
   Activity,
   BarChart3,
-  Bot,
   ChevronDown,
   Clock3,
   History,
@@ -15,8 +14,6 @@ import {
   RotateCcw,
   Settings,
   Sun,
-  Wifi,
-  WifiOff,
   Wallet,
   X,
 } from 'lucide-react';
@@ -54,10 +51,9 @@ const aiContractChoices = (Object.entries(CONTRACT_TYPES) as [PracticeKind, stri
     label: CONTRACT_LABELS[type],
   })));
 
-type DashboardPage = 'hub' | 'premium-bots' | 'cashier' | 'history' | 'settings';
+type DashboardPage = 'hub' | 'cashier' | 'history' | 'settings';
 const sidebarItems = [
   { page: 'hub', label: 'Traders Hub', icon: Activity },
-  { page: 'premium-bots', label: 'Premium Bots', icon: Bot },
   { page: 'cashier', label: 'Cashier', icon: Wallet },
   { page: 'history', label: 'Trade History', icon: History },
   { page: 'settings', label: 'Settings', icon: Settings },
@@ -718,6 +714,37 @@ export function MarketPilotDashboard() {
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
   }, [theme]);
+
+  useEffect(() => {
+    if (!authUser?.id) return;
+    const supabase = getSupabaseBrowserClient();
+    let requestInFlight = false;
+    const recordActivity = async () => {
+      if (document.visibilityState !== 'visible' || requestInFlight) return;
+      requestInFlight = true;
+      try {
+        const { error } = await supabase.rpc('marketpilot_record_activity');
+        if (error) console.error('MarketPilot activity heartbeat failed.', error.message);
+      } catch (error) {
+        console.error('MarketPilot activity heartbeat failed.', error);
+      } finally {
+        requestInFlight = false;
+      }
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') void recordActivity();
+    };
+
+    void recordActivity();
+    const intervalId = window.setInterval(() => void recordActivity(), 30_000);
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    window.addEventListener('focus', onVisibilityChange);
+    return () => {
+      window.clearInterval(intervalId);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+      window.removeEventListener('focus', onVisibilityChange);
+    };
+  }, [authUser?.id]);
 
   useEffect(() => {
     if (market.connectionState !== 'connected') return;
@@ -1938,11 +1965,39 @@ export function MarketPilotDashboard() {
               </button>
             )}
           </div>
-          <p className="ai-trader-description">
-            Select one contract to repeat automatically. It waits for each trade to settle before starting another.
-            These are MarketPilot simulated trades, not orders to a broker. The selected Real wallet balance is used when active.
-            Automated execution does not predict the market. Stopping prevents new submissions; requests already sent or trades already open may still settle.
-          </p>
+          {kind !== 'rise-fall' && (
+            <div className="ai-mobile-digit-strip" role="img" aria-label="Live digit distribution from zero to nine">
+              {Array.from({ length: 10 }, (_, value) => {
+                const percentage = digitPercentages[value];
+                const isHighest = percentage !== null && percentage === highestDigitPercentage;
+                const isLowest = percentage !== null &&
+                  percentage === lowestDigitPercentage &&
+                  lowestDigitPercentage !== highestDigitPercentage;
+                const isLiveTradeDigit = !!activeDigitTrade && value === activeDigit;
+                const isExitTradeDigit = !activeDigitTrade && selectedDigitExitHighlight?.digit === value;
+
+                return (
+                  <div className="ai-mobile-digit-item" key={value}>
+                    <span className="ai-mobile-digit-percentage">
+                      {percentage === null ? '—' : `${percentage.toFixed(1)}%`}
+                    </span>
+                    <span
+                      className={`digit-circle ai-mobile-digit-circle${isHighest ? ' is-highest' : ''}${isLowest ? ' is-lowest' : ''}${isLiveTradeDigit ? ' is-contract-active' : ''}${isExitTradeDigit ? ` is-exit-${selectedDigitExitHighlight?.outcome}` : ''}`}
+                      title={percentage === null ? `${value}: waiting for data` : `${value}: ${percentage.toFixed(1)}%`}
+                    >
+                      {value}
+                    </span>
+                  </div>
+                );
+              })}
+              {pointerDigit !== null && (
+                <span
+                  className={`digit-pointer ai-mobile-digit-pointer${activeDigitTrade ? ' is-practice-active' : ''}${!activeDigitTrade && selectedDigitExitHighlight ? ` is-exit-${selectedDigitExitHighlight.outcome}` : ''}`}
+                  style={{ left: `${((pointerDigit + 0.5) / 10) * 100}%` }}
+                />
+              )}
+            </div>
+          )}
           <div className="ai-contract-list" role="group" aria-label="Select one contract type">
             {aiContractChoices.map((choice) => {
               const supported = tickContracts.some((contract) => contract.contract_type === choice.type);
@@ -2026,11 +2081,6 @@ export function MarketPilotDashboard() {
               />
             </label>
           </div>
-          <p className="ai-trader-risk-note">
-            Stop limits track session net profit/loss. After a loss, the next stake is multiplied; after a win, it resets.
-            Stop loss triggers after realized net loss reaches or exceeds your limit; the final trade can take the total past it.
-            It will not place a stake larger than your wallet balance. Rise/Fall contracts have a 10-tick minimum.
-          </p>
           {!aiRiskLimitsAreValid && (
             <p className="ai-trader-message" role="status">
               Use a stake of at least $0.35, positive profit and loss limits, and a multiplier of at least 1.01×.
@@ -2163,7 +2213,7 @@ export function MarketPilotDashboard() {
                 : 'Your stop-loss limit was reached.'}
             </p>
             <strong className="ai-limit-result">
-              Net result {aiLimitNotification.netProfit >= 0 ? '+' : '-'}$
+              NET PROFIT {aiLimitNotification.netProfit >= 0 ? '+' : '-'}$
               {Math.abs(aiLimitNotification.netProfit).toFixed(2)}
             </strong>
             <button
@@ -2171,7 +2221,7 @@ export function MarketPilotDashboard() {
               className="ai-limit-confirm"
               onClick={() => setAiLimitNotification(null)}
             >
-              Got it
+              DONE
             </button>
           </section>
         </div>
@@ -2232,13 +2282,6 @@ export function MarketPilotDashboard() {
           >
             Cashier
           </button>
-          <button
-            type="button"
-            className={`nav-link${currentPage === 'premium-bots' ? ' active' : ''}`}
-            onClick={() => setCurrentPage('premium-bots')}
-          >
-            Premium Bots
-          </button>
           {authUser && (
             <button
               type="button"
@@ -2276,10 +2319,6 @@ export function MarketPilotDashboard() {
             walletError={walletError}
             onWalletChange={changeActiveWallet}
           />
-          <div className={`connection-pill ${market.connectionState}`}>
-            {market.connectionState === 'connected' ? <Wifi size={14} /> : <WifiOff size={14} />}
-            <span>{market.connectionState === 'connected' ? 'Live Deriv prices' : market.connectionState}</span>
-          </div>
         </div>
       </header>
       {mobileMenuOpen && (
@@ -2376,33 +2415,6 @@ export function MarketPilotDashboard() {
             </section>
           )}
         </div>
-      )}
-
-      {currentPage === 'premium-bots' && (
-        <section className="page-content premium-bots-page" aria-labelledby="premium-bots-title">
-          <div className="page-heading">
-            <div>
-              <p className="eyebrow">AUTOMATED TRADING</p>
-              <h1 id="premium-bots-title">Premium Bots</h1>
-            </div>
-          </div>
-          <article className="account-settings-card premium-bots-card">
-            <div className="premium-bots-card-heading">
-              <span className="premium-bots-icon"><Bot size={21} aria-hidden="true" /></span>
-              <span className="premium-bots-status">Under development</span>
-            </div>
-            <h2>Trading automation is coming soon</h2>
-            <p>
-              Expert Advisors (EAs) and trading bots can follow predefined rules and execute
-              strategies consistently, helping reduce repetitive manual steps.
-            </p>
-            <p>
-              Automation does not make trades certain or guarantee accuracy or profit. Markets
-              are risky, and every strategy can lose. Premium Bots are under development and
-              are not available to trade yet.
-            </p>
-          </article>
-        </section>
       )}
 
       {currentPage === 'cashier' && (
@@ -2529,14 +2541,17 @@ export function MarketPilotDashboard() {
                       <article className="cashier-deposit-notice is-success">
                         <div className="cashier-deposit-success-mark" aria-hidden="true">✓</div>
                         <div>
-                          <strong>Success</strong>
-                          <p>Funds added to your real trading wallet</p>
-                          <b>{formatMoney(cashierDepositSuccess.amount)} USD credited</b>
+                          <strong>Congratulations!</strong>
+                          <p>Your deposit is confirmed and added to your real trading wallet.</p>
+                          <b>{formatMoney(cashierDepositSuccess.amount)} USD deposit credited</b>
                           {cashierDepositSuccess.welcomeBonus > 0 && (
-                            <p className="cashier-welcome-bonus">
-                              Welcome bonus: {formatMoney(cashierDepositSuccess.welcomeBonus)} USD
+                            <p className="cashier-deposit-bonus">
+                              50% deposit bonus added: {formatMoney(cashierDepositSuccess.welcomeBonus)} USD
                             </p>
                           )}
+                          <b>
+                            Total added: {formatMoney(cashierDepositSuccess.amount + cashierDepositSuccess.welcomeBonus)} USD
+                          </b>
                         </div>
                       </article>
                     ) : cashierDepositConfirmation === 'failed' ? (
@@ -2627,11 +2642,11 @@ export function MarketPilotDashboard() {
                     ? `Approx. KES ${Math.round((Number(cashierPaymentAmount) || 0) * cashierKesPerUsd).toLocaleString('en-KE')} at KES ${cashierKesPerUsd.toLocaleString('en-US')} per USD.`
                     : 'KES/USD rate is not available yet. An administrator must set it before payments can be processed.'}
                 </p>
-                <p className="cashier-payment-note">
-                  {cashierPaymentMode === 'deposit'
-                    ? 'A payment prompt will be sent to the phone number entered above. Your USD balance is credited after payment confirmation. Your first confirmed deposit earns a one-time 50% welcome bonus.'
-                    : 'The USD amount is reserved immediately. An administrator must approve your request and send the KES amount to this phone number.'}
-                </p>
+                {cashierPaymentMode === 'deposit' && (
+                  <p className="cashier-payment-note">
+                    A payment prompt will be sent to the phone number entered above. Your USD balance is credited after payment confirmation. Every confirmed deposit earns an additional 50% bonus.
+                  </p>
+                )}
                 <div className="cashier-payment-actions">
                   <button
                     type="submit"
@@ -2642,7 +2657,7 @@ export function MarketPilotDashboard() {
                       ? 'Processing…'
                       : cashierPaymentMode === 'deposit'
                         ? 'Send STK'
-                        : 'Request withdrawal'}
+                        : 'Withdraw'}
                   </button>
                   <button
                     type="button"
@@ -2677,8 +2692,8 @@ export function MarketPilotDashboard() {
                         <strong>{transaction.type === 'deposit' ? 'Deposit' : 'Withdrawal'}</strong>
                         <span>{localTime(Number.isFinite(Date.parse(transaction.createdAt)) ? Date.parse(transaction.createdAt) / 1000 : 0)} UTC</span>
                         {transaction.welcomeBonus !== undefined && transaction.welcomeBonus > 0 && (
-                          <span className="cashier-welcome-bonus">
-                            Welcome bonus +{formatMoney(transaction.welcomeBonus)} USD
+                          <span className="cashier-deposit-bonus">
+                            Deposit bonus +{formatMoney(transaction.welcomeBonus)} USD
                           </span>
                         )}
                       </div>

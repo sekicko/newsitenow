@@ -515,6 +515,7 @@ select option { color: var(--text); background: var(--surface); }
   box-shadow: var(--shadow);
 }
 .ai-trader-panel-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.ai-mobile-digit-strip { display: none; }
 .ai-trader-panel-heading > div { display: grid; gap: 3px; }
 .ai-trader-panel-heading strong { font: 800 13px/1.2 'Manrope', sans-serif; }
 .ai-trader-panel-heading span { color: var(--text-muted); font-size: 9px; }
@@ -803,6 +804,44 @@ select option { color: var(--text); background: var(--surface); }
   }
   .ai-trader-launch { width: 44px; height: 44px; font-size: 15px; }
   .ai-trader-panel { gap: 8px; padding: 10px; }
+  .ai-mobile-digit-strip {
+    position: sticky;
+    z-index: 3;
+    top: -10px;
+    display: grid;
+    grid-template-columns: repeat(10, minmax(0, 1fr));
+    align-items: end;
+    gap: 1px;
+    padding: 5px 3px 9px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface);
+    box-shadow: 0 5px 14px rgba(0, 0, 0, .12);
+  }
+  .ai-mobile-digit-item {
+    display: grid;
+    justify-items: center;
+    min-width: 0;
+  }
+  .ai-mobile-digit-percentage {
+    min-height: 11px;
+    color: var(--digit-percentage);
+    font-size: 7px;
+    font-weight: 700;
+    line-height: 11px;
+    font-variant-numeric: tabular-nums;
+  }
+  .ai-mobile-digit-circle {
+    width: clamp(22px, 7vw, 28px);
+    border-width: 2px;
+    font-size: 9px;
+  }
+  .ai-mobile-digit-pointer {
+    bottom: 1px;
+    border-bottom-width: 7px;
+    border-right-width: 5px;
+    border-left-width: 5px;
+  }
   .ai-contract-list { gap: 4px; }
   .ai-contract-choice { min-height: 32px; padding: 4px; font-size: 8px; }
   .ai-trader-fields { gap: 7px; }
@@ -1297,15 +1336,7 @@ select option { color: var(--text); background: var(--surface); }
 .cashier-trade-button:hover { border-color: #2864ce; background: #2864ce; }
 .account-settings-page { max-width: 900px; min-height: calc(100vh - 72px); padding: 30px clamp(18px, 4vw, 64px); margin: 0 auto; }
 .account-settings-card { padding: 24px; border: 1px solid var(--border); border-radius: 13px; background: var(--surface); box-shadow: var(--shadow); }
-.premium-bots-page { max-width: 900px; }
-.premium-bots-card { max-width: 720px; }
-.premium-bots-card-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 20px; }
-.premium-bots-icon { display: grid; width: 42px; height: 42px; place-items: center; color: var(--blue-bright); border: 1px solid rgba(66, 133, 244, .2); border-radius: 11px; background: rgba(66, 133, 244, .08); }
-.premium-bots-status { padding: 6px 9px; color: #a45b08; border: 1px solid rgba(230, 160, 68, .28); border-radius: 999px; background: rgba(230, 160, 68, .1); font-size: 9px; font-weight: 800; letter-spacing: .3px; text-transform: uppercase; }
-.premium-bots-card h2 { margin: 0 0 12px; font: 750 18px/1.35 'Manrope', sans-serif; }
-.premium-bots-card p { margin: 0 0 10px; color: var(--text-secondary); font-size: 11px; line-height: 1.65; }
-.premium-bots-card p:last-child { margin-bottom: 0; }
-.cashier-welcome-bonus { color: #08784f !important; font-size: 10px !important; font-weight: 700; }
+.cashier-deposit-bonus { color: #08784f !important; font-size: 10px !important; font-weight: 700; }
 .account-settings-heading { display: flex; align-items: center; gap: 12px; padding-bottom: 20px; margin-bottom: 20px; border-bottom: 1px solid var(--border); }
 .account-settings-icon { display: grid; flex: 0 0 auto; width: 40px; height: 40px; place-items: center; color: var(--blue-bright); border: 1px solid rgba(66, 133, 244, .2); border-radius: 10px; background: rgba(66, 133, 244, .08); }
 .account-settings-heading .eyebrow { margin-bottom: 4px; }
@@ -1340,8 +1371,11 @@ select option { color: var(--text); background: var(--surface); }
 .admin-button:disabled { opacity: .6; cursor: wait; }
 .admin-button--secondary { color: var(--text-secondary); }
 .admin-error { padding: 11px 13px; margin: 0 0 16px; color: var(--red); border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
-.admin-metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin-bottom: 16px; }
+.admin-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)); gap: 14px; margin-bottom: 16px; }
 .admin-card { min-width: 0; padding: 18px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); box-shadow: var(--shadow); }
+.admin-card-button { width: 100%; color: inherit; font: inherit; text-align: left; cursor: pointer; transition: border-color .16s ease, transform .16s ease; }
+.admin-card-button:hover, .admin-card-button:focus-visible { border-color: var(--blue-bright); outline: none; transform: translateY(-1px); }
+.admin-card-button:focus-visible { box-shadow: 0 0 0 3px rgba(66, 133, 244, .18), var(--shadow); }
 .admin-card-title { margin-bottom: 15px; }
 .admin-card-title h2, .admin-list-heading h2 { margin: 0; font: 700 13px/1.3 'Manrope', sans-serif; }
 .admin-card-icon { width: 33px; height: 33px; border-radius: 9px; }
@@ -1350,14 +1384,14 @@ select option { color: var(--text); background: var(--surface); }
 .admin-status { display: inline-flex; align-items: center; gap: 6px; font-size: 10px; font-weight: 700; white-space: nowrap; }
 .admin-status i { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
 .admin-status--active { color: var(--green); }
-.admin-status--dormant { color: #e99436; }
+.admin-status--offline { color: #e99436; }
 .admin-card-note { margin: 13px 0 0; color: var(--text-muted); font-size: 9px; line-height: 1.5; }
 .admin-volume-grid { display: grid; gap: 11px; }
 .admin-volume-grid > div { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
 .admin-volume-grid span { color: var(--text-secondary); font-size: 10px; }
 .admin-volume-grid strong { font: 700 12px/1.3 'Manrope', sans-serif; text-align: right; }
 .admin-volume-grid .admin-volume-balance { padding-top: 10px; border-top: 1px solid var(--border); }
-.admin-payments { margin-bottom: 16px; }
+.admin-payments, .admin-pending-withdrawals { margin-bottom: 16px; }
 .admin-rate-form { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px; margin-bottom: 16px; }
 .admin-rate-form label { display: grid; min-width: 180px; gap: 5px; color: var(--text-secondary); font-size: 9px; font-weight: 700; }
 .admin-rate-form input, .admin-payment-actions input { min-height: 34px; padding: 0 9px; color: var(--text); border: 1px solid var(--border); border-radius: 6px; outline: none; background: var(--surface-raised); font: 600 10px 'DM Sans', sans-serif; }
@@ -1372,8 +1406,14 @@ select option { color: var(--text); background: var(--surface); }
 .admin-payment-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .admin-payment-actions input { width: 130px; }
 .admin-button--danger { color: var(--red); }
+.admin-success { padding: 11px 13px; margin: 0 0 16px; color: var(--green); border: 1px solid rgba(8, 120, 79, .3); border-radius: 8px; background: rgba(8, 120, 79, .08); }
+.admin-balance-credit { display: flex; align-items: center; gap: 6px; }
+.admin-balance-credit input { width: 110px; min-height: 35px; padding: 0 8px; color: var(--text); border: 1px solid var(--border); border-radius: 7px; outline: none; background: var(--surface-raised); font: 600 10px 'DM Sans', sans-serif; }
+.admin-balance-credit input:focus { border-color: var(--blue-bright); }
 
 .admin-list-heading { display: flex; align-items: center; justify-content: space-between; margin-bottom: 13px; }
+.admin-share-section { margin-bottom: 16px; }
+.admin-share-section .admin-list-heading h2 { font: 700 16px/1.3 'Manrope', sans-serif; }
 .admin-list-heading h2 span { margin-left: 5px; color: var(--text-muted); font: 500 10px 'DM Sans', sans-serif; }
 .admin-user-list { padding-bottom: 10px; }
 .admin-table-scroll { max-height: 440px; overflow: auto; border: 1px solid var(--border); border-radius: 8px; }
@@ -1417,6 +1457,7 @@ select option { color: var(--text); background: var(--surface); }
   .admin-metrics { grid-template-columns: minmax(0, 1fr); gap: 10px; }
   .admin-card { padding: 15px; }
   .admin-brand h1 { font-size: 21px; }
+  .admin-share-section .admin-list-heading { align-items: flex-start; flex-direction: column; gap: 10px; }
   .cashier-heading { align-items: flex-start; flex-direction: column; gap: 12px; }
   .cashier-heading h1 { font-size: 22px; }
   .cashier-heading .heading-subtitle { margin-top: 5px; }
