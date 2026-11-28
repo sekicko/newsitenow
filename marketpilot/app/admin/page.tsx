@@ -21,17 +21,24 @@ function parseAdminDashboardData(
   depositsToday: unknown,
   paymentRate: unknown,
   paymentTransactions: unknown,
+  userIds: unknown,
 ): AdminDashboardData {
-  if (!isRecord(value) || !Array.isArray(value.users) || !Array.isArray(paymentTransactions)) {
+  if (
+    !isRecord(value) ||
+    !Array.isArray(value.users) ||
+    !Array.isArray(paymentTransactions) ||
+    !Array.isArray(userIds)
+  ) {
     throw new Error('The administrator report returned invalid data.');
   }
 
-  const { totalUsers, activeUsers, dormantUsers, totalRealBalance } = value;
+  const { totalUsers, activeUsers, dormantUsers, totalRealBalance, totalWithdrawn } = value;
   if (
     !isFiniteNumber(totalUsers) || totalUsers < 0 ||
     !isFiniteNumber(activeUsers) || activeUsers < 0 ||
     !isFiniteNumber(dormantUsers) || dormantUsers < 0 ||
     !isFiniteNumber(totalRealBalance) || totalRealBalance < 0 ||
+    !isFiniteNumber(totalWithdrawn) || totalWithdrawn < 0 ||
     (depositsToday !== null && (!isFiniteNumber(depositsToday) || depositsToday < 0)) ||
     (marketRealWinRate !== null &&
       (!isFiniteNumber(marketRealWinRate) || marketRealWinRate < 0 || marketRealWinRate > 100))
@@ -44,19 +51,36 @@ function parseAdminDashboardData(
     throw new Error('The administrator payment rate is invalid.');
   }
 
+  const userIdsByEmail = new Map<string, string>();
+  for (const row of userIds) {
+    if (
+      !isRecord(row) ||
+      typeof row.email !== 'string' ||
+      typeof row.id !== 'string' ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(row.id)
+    ) {
+      throw new Error('The administrator report returned invalid user identifiers.');
+    }
+    userIdsByEmail.set(row.email.toLowerCase(), row.id);
+  }
+
   const users: AdminDashboardData['users'] = value.users.map((row: unknown) => {
     if (!isRecord(row)) throw new Error('The administrator report returned an invalid user.');
-    const { username, email, phone, activityStatus, realBalance } = row;
+    const { username, email, phone, activityStatus, lastSeenAt, lastLoginAt, realBalance } = row;
+    const id = typeof email === 'string' ? userIdsByEmail.get(email.toLowerCase()) : undefined;
     if (
+      typeof id !== 'string' ||
       typeof username !== 'string' ||
       typeof email !== 'string' ||
       (phone !== null && typeof phone !== 'string') ||
-      (activityStatus !== 'Active' && activityStatus !== 'Dormant') ||
+      (activityStatus !== 'Active' && activityStatus !== 'Offline') ||
+      (lastSeenAt !== null && (typeof lastSeenAt !== 'string' || !Number.isFinite(Date.parse(lastSeenAt)))) ||
+      (lastLoginAt !== null && (typeof lastLoginAt !== 'string' || !Number.isFinite(Date.parse(lastLoginAt)))) ||
       !isFiniteNumber(realBalance) || realBalance < 0
     ) {
       throw new Error('The administrator report returned an invalid user.');
     }
-    return { username, email, phone, activityStatus, realBalance };
+    return { id, username, email, phone, activityStatus, lastSeenAt, lastLoginAt, realBalance };
   });
 
   const transactions: AdminPaymentTransaction[] = paymentTransactions.map((row: unknown) => {
@@ -116,6 +140,7 @@ function parseAdminDashboardData(
     dormantUsers,
     depositsToday,
     totalRealBalance,
+    totalWithdrawn,
     realWinRate: marketRealWinRate,
     kesPerUsd: paymentRate,
     transactions,
@@ -140,24 +165,34 @@ export default async function AdminPage() {
   if (roleError) throw new Error(`Could not verify administrator access: ${roleError.message}`);
   if (!isAdmin) redirect('/');
 
-  const [statsResult, marketRateResult, depositsTodayResult, paymentRateResult, paymentTransactionsResult] = await Promise.all([
+  const [
+    statsResult,
+    marketRateResult,
+    depositsTodayResult,
+    paymentRateResult,
+    paymentTransactionsResult,
+    userIdsResult,
+  ] = await Promise.all([
     supabase.rpc('marketpilot_admin_dashboard_stats'),
     supabase.rpc('marketpilot_admin_get_market_real_win_rate'),
     supabase.rpc('marketpilot_admin_deposits_today'),
     supabase.rpc('marketpilot_get_kes_per_usd'),
     supabase.rpc('marketpilot_admin_list_transactions'),
+    supabase.rpc('marketpilot_admin_list_user_ids'),
   ]);
   if (statsResult.error) throw new Error(`Could not load administrator reports: ${statsResult.error.message}`);
   if (marketRateResult.error) throw new Error(`Could not load historical market win rate: ${marketRateResult.error.message}`);
   if (depositsTodayResult.error) throw new Error(`Could not load today's deposits: ${depositsTodayResult.error.message}`);
   if (paymentRateResult.error) throw new Error(`Could not load the payment exchange rate: ${paymentRateResult.error.message}`);
   if (paymentTransactionsResult.error) throw new Error(`Could not load payment transactions: ${paymentTransactionsResult.error.message}`);
+  if (userIdsResult.error) throw new Error(`Could not load administrator user identifiers: ${userIdsResult.error.message}`);
   const dashboardData = parseAdminDashboardData(
     statsResult.data,
     marketRateResult.data,
     depositsTodayResult.data,
     paymentRateResult.data,
     paymentTransactionsResult.data,
+    userIdsResult.data,
   );
 
   return (
