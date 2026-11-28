@@ -35,6 +35,8 @@ Apply `20261128000100_marketpilot_admin_presence_and_withdrawals.sql` for the ad
 
 Apply `20261128000200_marketpilot_admin_balance_credit.sql` to enable administrator balance credits. Each credit adds to the user's Real wallet and atomically creates a completed deposit transaction for the same USD amount; a configured KES-per-USD rate is required for the transaction record.
 
+Apply `20261128000300_marketpilot_deposit_share_tracking.sql` to track 60% Owner Share and 40% Dev Share from each newly completed, provider-verified deposit. Shares are based on the deposited USD amount, excluding deposit bonuses and administrator credits. Use the admin reset action after settling both shares; each reset is audit-logged and subsequent deposits start accumulating from zero.
+
 Signed-in users can change their full name and username from Settings and request a password reset email. Phone numbers are not editable in Settings because they are used for sign-in.
 
 To grant administrator access, first create the account, then add its email or Auth user ID to `public.marketpilot_admins` in the Supabase SQL Editor. For example, use `insert into public.marketpilot_admins (email) values (lower('admin@example.com'));` or `insert into public.marketpilot_admins (user_id) values ('AUTH-USER-UUID');`. Admin records cannot be changed by app users. Admins are redirected to `/admin` after signing in; the server page and reporting RPC both verify the admin allowlist.

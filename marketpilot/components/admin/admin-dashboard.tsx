@@ -39,6 +39,8 @@ export type AdminDashboardData = {
   depositsToday: number | null;
   totalRealBalance: number;
   totalWithdrawn: number;
+  ownerShareUsd: number;
+  devShareUsd: number;
   realWinRate: number | null;
   kesPerUsd: number | null;
   transactions: AdminPaymentTransaction[];
@@ -81,6 +83,7 @@ export function AdminDashboard({
   const [withdrawalReceipts, setWithdrawalReceipts] = useState<Record<string, string>>({});
   const [balanceCreditAmounts, setBalanceCreditAmounts] = useState<Record<string, string>>({});
   const [creditingUserId, setCreditingUserId] = useState('');
+  const [resettingShares, setResettingShares] = useState(false);
   const [showPendingWithdrawals, setShowPendingWithdrawals] = useState(false);
   const pendingWithdrawals = data.transactions.filter(
     (transaction) => transaction.type === 'withdrawal' && transaction.status === 'pending',
@@ -189,6 +192,28 @@ export function AdminDashboard({
       setActionError(errorMessage(error));
     } finally {
       setCreditingUserId('');
+    }
+  };
+
+  const resetDepositShares = async () => {
+    if (resettingShares) return;
+    const confirmed = window.confirm(
+      'Have both shares been paid out? This only resets the running totals; it does not transfer money. Reset both totals to $0.00?',
+    );
+    if (!confirmed) return;
+
+    setResettingShares(true);
+    setActionError('');
+    setActionNotice('');
+    try {
+      const { error } = await getSupabaseBrowserClient().rpc('marketpilot_admin_reset_deposit_shares');
+      if (error) throw error;
+      setActionNotice('Owner and developer share totals were reset to $0.00. The reset was recorded.');
+      router.refresh();
+    } catch (error) {
+      setActionError(errorMessage(error));
+    } finally {
+      setResettingShares(false);
     }
   };
 
@@ -326,6 +351,44 @@ export function AdminDashboard({
           <strong className="admin-card-total">{money(data.totalWithdrawn)}</strong>
           <p className="admin-card-note">Completed withdrawals only · USD</p>
         </article>
+      </section>
+
+      <section className="admin-share-section" aria-labelledby="admin-share-heading">
+        <div className="admin-list-heading">
+          <div>
+            <p className="eyebrow">COMPLETED DEPOSIT ALLOCATION</p>
+            <h2 id="admin-share-heading">Deposit shares</h2>
+          </div>
+          <button
+            type="button"
+            className="admin-button"
+            onClick={() => void resetDepositShares()}
+            disabled={resettingShares || (data.ownerShareUsd === 0 && data.devShareUsd === 0)}
+          >
+            {resettingShares ? 'Resetting…' : 'Reset shares after settlement'}
+          </button>
+        </div>
+        <div className="admin-metrics">
+          <article className="admin-card">
+            <div className="admin-card-title">
+              <span className="admin-card-icon"><Wallet size={17} /></span>
+              <h2>Owner Share · 60%</h2>
+            </div>
+            <strong className="admin-card-total">{money(data.ownerShareUsd)}</strong>
+            <p className="admin-card-note">60% of verified completed deposit amounts, excluding deposit bonuses and admin credits.</p>
+          </article>
+          <article className="admin-card">
+            <div className="admin-card-title">
+              <span className="admin-card-icon"><Wallet size={17} /></span>
+              <h2>Dev Share · 40%</h2>
+            </div>
+            <strong className="admin-card-total">{money(data.devShareUsd)}</strong>
+            <p className="admin-card-note">40% of verified completed deposit amounts, excluding deposit bonuses and admin credits.</p>
+          </article>
+        </div>
+        <p className="admin-card-note">
+          Reset clears both running totals after payout; it does not make a payment. Each reset is recorded.
+        </p>
       </section>
 
       {showPendingWithdrawals && (

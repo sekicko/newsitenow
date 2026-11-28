@@ -22,23 +22,28 @@ function parseAdminDashboardData(
   paymentRate: unknown,
   paymentTransactions: unknown,
   userIds: unknown,
+  depositShares: unknown,
 ): AdminDashboardData {
   if (
     !isRecord(value) ||
     !Array.isArray(value.users) ||
     !Array.isArray(paymentTransactions) ||
-    !Array.isArray(userIds)
+    !Array.isArray(userIds) ||
+    !isRecord(depositShares)
   ) {
     throw new Error('The administrator report returned invalid data.');
   }
 
   const { totalUsers, activeUsers, dormantUsers, totalRealBalance, totalWithdrawn } = value;
+  const { ownerShareUsd, devShareUsd } = depositShares;
   if (
     !isFiniteNumber(totalUsers) || totalUsers < 0 ||
     !isFiniteNumber(activeUsers) || activeUsers < 0 ||
     !isFiniteNumber(dormantUsers) || dormantUsers < 0 ||
     !isFiniteNumber(totalRealBalance) || totalRealBalance < 0 ||
     !isFiniteNumber(totalWithdrawn) || totalWithdrawn < 0 ||
+    !isFiniteNumber(ownerShareUsd) || ownerShareUsd < 0 ||
+    !isFiniteNumber(devShareUsd) || devShareUsd < 0 ||
     (depositsToday !== null && (!isFiniteNumber(depositsToday) || depositsToday < 0)) ||
     (marketRealWinRate !== null &&
       (!isFiniteNumber(marketRealWinRate) || marketRealWinRate < 0 || marketRealWinRate > 100))
@@ -141,6 +146,8 @@ function parseAdminDashboardData(
     depositsToday,
     totalRealBalance,
     totalWithdrawn,
+    ownerShareUsd,
+    devShareUsd,
     realWinRate: marketRealWinRate,
     kesPerUsd: paymentRate,
     transactions,
@@ -172,6 +179,7 @@ export default async function AdminPage() {
     paymentRateResult,
     paymentTransactionsResult,
     userIdsResult,
+    depositSharesResult,
   ] = await Promise.all([
     supabase.rpc('marketpilot_admin_dashboard_stats'),
     supabase.rpc('marketpilot_admin_get_market_real_win_rate'),
@@ -179,6 +187,7 @@ export default async function AdminPage() {
     supabase.rpc('marketpilot_get_kes_per_usd'),
     supabase.rpc('marketpilot_admin_list_transactions'),
     supabase.rpc('marketpilot_admin_list_user_ids'),
+    supabase.rpc('marketpilot_admin_get_deposit_shares'),
   ]);
   if (statsResult.error) throw new Error(`Could not load administrator reports: ${statsResult.error.message}`);
   if (marketRateResult.error) throw new Error(`Could not load historical market win rate: ${marketRateResult.error.message}`);
@@ -186,6 +195,7 @@ export default async function AdminPage() {
   if (paymentRateResult.error) throw new Error(`Could not load the payment exchange rate: ${paymentRateResult.error.message}`);
   if (paymentTransactionsResult.error) throw new Error(`Could not load payment transactions: ${paymentTransactionsResult.error.message}`);
   if (userIdsResult.error) throw new Error(`Could not load administrator user identifiers: ${userIdsResult.error.message}`);
+  if (depositSharesResult.error) throw new Error(`Could not load deposit share totals: ${depositSharesResult.error.message}`);
   const dashboardData = parseAdminDashboardData(
     statsResult.data,
     marketRateResult.data,
@@ -193,6 +203,7 @@ export default async function AdminPage() {
     paymentRateResult.data,
     paymentTransactionsResult.data,
     userIdsResult.data,
+    depositSharesResult.data,
   );
 
   return (
